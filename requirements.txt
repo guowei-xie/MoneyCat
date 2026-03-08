@@ -1,0 +1,4 @@
+# MoneyCat 依赖（不含 xtquant，需使用项目自带或 QMT 环境）
+akshare>=1.12.0
+pandas>=1.5.0
+tqdm>=4.65.0

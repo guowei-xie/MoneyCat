@@ -1,0 +1,15 @@
+# MoneyCat 配置文件示例，复制为 config.ini 后按实盘修改
+
+[ACCOUNT]
+# 资金账号（字符串）
+ACCOUNT_ID = your_account_id
+# MiniQMT 的 userdata 目录绝对路径
+MINI_QMT_PATH = C:\path\to\userdata
+
+[LOG]
+# 日志级别: DEBUG / INFO / WARNING / ERROR
+LEVEL = INFO
+
+[DATA]
+# 历史数据下载起始日期，用于初始化时补全
+HISTORY_START = 20250101
