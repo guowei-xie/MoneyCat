@@ -2,9 +2,11 @@
 """
 行情数据模块：从 QMT(xtdata) 获取、读取、简单清洗行情数据。
 """
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 import sys
 import os
+
+import pandas as pd
 
 # 项目根目录加入 path，保证可引用 xtquant
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -14,6 +16,7 @@ if _root not in sys.path:
 from xtquant import xtdata
 from logging_config import logger
 from utils.common import add_stock_suffix, add_stock_suffix_list
+from utils.universe import filter_main_board, is_st_name, is_delisting_name
 
 try:
     from tqdm import tqdm
@@ -35,6 +38,17 @@ class DataBroker:
         self._ip = ip
         self._port = port
         self._connected = False
+        self._main_board_universe: List[str] = []
+        self._instrument_cache: Dict[str, Dict[str, Any]] = {}
+
+    @property
+    def main_board_universe(self) -> List[str]:
+        """
+        主板股票池缓存（沪深A股主板）。
+
+        约定：由主入口统一初始化，策略与其它模块只读取，不重复构建。
+        """
+        return list(self._main_board_universe)
 
     def connect(self) -> bool:
         """连接 xtdata 服务（MiniQMT 行情）。"""
@@ -136,6 +150,54 @@ class DataBroker:
         """简单清洗：去除全 NaN 的列（可选），此处仅做透传。"""
         return data
 
+    def get_kline_bars(
+        self,
+        stock_list: List[str],
+        period: str = "1d",
+        start_time: str = "",
+        end_time: str = "",
+        count: int = -1,
+        field_list: Optional[List[str]] = None,
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        获取按股票聚合的 K 线数据（基于 xtdata.get_market_data_ex）。
+
+        :param stock_list: 股票代码列表
+        :param period: 周期，如 '1d' / '1m'
+        :param start_time: 起始时间（YYYYMMDD 或 YYYYMMDDHHMMSS）
+        :param end_time: 结束时间
+        :param count: 最大条数，-1 表示全部
+        :param field_list: 需要的字段列表，None 或空则为全部字段
+        :return: { '000001.SZ': DataFrame(columns=['open','high','low','close',...], index=时间) }
+        """
+        codes = add_stock_suffix_list(stock_list)
+        if not codes:
+            return {}
+        try:
+            # 对于 K 线周期，xtdata.get_market_data_ex 返回结构：
+            # { stock_code: DataFrame(index=时间, columns=字段) }
+            raw = xtdata.get_market_data_ex(
+                field_list=field_list or [],
+                stock_list=codes,
+                period=period,
+                start_time=start_time,
+                end_time=end_time,
+                count=count,
+            )
+        except Exception as e:
+            logger.error("get_kline_bars 失败: %s", e)
+            return {}
+        if not raw or not isinstance(raw, dict):
+            return {}
+
+        result: Dict[str, pd.DataFrame] = {}
+        for code in codes:
+            df = raw.get(code)
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                # 直接复用 xtdata 返回的结构：index 为时间，列为字段
+                result[code] = df
+        return result
+
     def get_full_tick(self, stock_list: List[str]) -> Dict[str, Dict]:
         """
         获取全推 tick（实时快照）。
@@ -153,6 +215,37 @@ class DataBroker:
             logger.error("get_full_tick 失败: %s", e)
             return {}
 
+    def subscribe_kline(
+        self,
+        stock_list: List[str],
+        period: str = "1m",
+        start_time: str = "",
+        end_time: str = "",
+        count: int = -1,
+    ) -> None:
+        """
+        订阅分时 / K 线数据，使 xtdata 本地缓存自动更新。
+
+        :param stock_list: 股票代码列表
+        :param period: 周期，如 '1m' / '5m' / '1d'
+        :param start_time: 起始时间，可留空
+        :param end_time: 结束时间，可留空
+        :param count: 补历史条数，-1 表示全部
+        """
+        codes = add_stock_suffix_list(stock_list)
+        for code in codes:
+            try:
+                xtdata.subscribe_quote(
+                    stock_code=code,
+                    period=period,
+                    start_time=start_time,
+                    end_time=end_time,
+                    count=count,
+                    callback=None,
+                )
+            except Exception as e:
+                logger.warning("订阅 K 线失败 %s: %s", code, e)
+
     def get_latest_price(self, stock_code: str) -> Optional[float]:
         """获取单只股票最新价，失败返回 None。"""
         code = add_stock_suffix(stock_code)
@@ -165,7 +258,77 @@ class DataBroker:
         """获取合约基础信息。"""
         code = add_stock_suffix(stock_code)
         try:
-            return xtdata.get_instrument_detail(code, iscomplete)
+            cache_key = f"{code}|{int(bool(iscomplete))}"
+            if cache_key in self._instrument_cache:
+                return self._instrument_cache[cache_key]
+            info = xtdata.get_instrument_detail(code, iscomplete)
+            if isinstance(info, dict):
+                self._instrument_cache[cache_key] = info
+            return info
         except Exception as e:
             logger.warning("get_instrument_detail %s: %s", code, e)
             return None
+
+    def get_stock_list_in_sector(self, sector_name: str) -> List[str]:
+        """
+        获取板块成分股列表。
+
+        :param sector_name: 板块名称，如 '沪深A股'
+        :return: 股票代码列表（带后缀）
+        """
+        try:
+            codes = xtdata.get_stock_list_in_sector(sector_name)
+            return add_stock_suffix_list(list(codes or []))
+        except Exception as e:
+            logger.warning("get_stock_list_in_sector(%s) 失败: %s", sector_name, e)
+            return []
+
+    def _get_stock_flags(self, stock_code: str) -> Tuple[str, bool, bool, bool]:
+        """
+        获取股票筛选所需的基础标记：名称、是否ST、是否停牌、是否退市。
+
+        判定规则（对齐 QuantLab-Real 思路，尽量用 xtdata 合约信息替代）：
+        - ST：名称包含 'ST' 或 '*ST'
+        - 退市：名称包含 '退市'（保守判定）
+        - 停牌：InstrumentStatus >= 1 视为停牌；InstrumentStatus <= 0 视为正常交易（-1 表示复牌）
+        """
+        info = self.get_instrument_detail(stock_code, iscomplete=False) or {}
+        name = str(info.get("InstrumentName") or "")
+        is_st = is_st_name(name)
+        is_delisting = is_delisting_name(name)
+
+        instrument_status = info.get("InstrumentStatus", 0)
+        try:
+            instrument_status_int = int(instrument_status)
+        except Exception:
+            instrument_status_int = 0
+        suspended = instrument_status_int >= 1
+
+        return name, is_st, suspended, is_delisting
+
+    def get_stock_list_in_main_board(self) -> List[str]:
+        """
+        获取沪深A股主板股票池（主板、非ST、非停牌、非退市）。
+
+        参考逻辑：QuantLab-Real/laboratory/pool.py + laboratory/utils.py
+        - 先取沪深A股全体成分股
+        - 过滤主板
+        - 再过滤：非ST、非停牌、非退市
+
+        :return: 主板股票代码列表（带后缀）
+        """
+        if self._main_board_universe:
+            return list(self._main_board_universe)
+        stocks = self.get_stock_list_in_sector("沪深A股")
+        main_board = filter_main_board(stocks)
+
+        result: List[str] = []
+        # 先按代码过滤主板后，再查合约信息过滤 ST/停牌/退市，减少请求量
+        for code in main_board:
+            _, is_st, is_suspended, is_delisting = self._get_stock_flags(code)
+            if is_st or is_suspended or is_delisting:
+                continue
+            result.append(code)
+
+        self._main_board_universe = result
+        return list(self._main_board_universe)

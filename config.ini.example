@@ -13,3 +13,17 @@ LEVEL = INFO
 [DATA]
 # 历史数据下载起始日期，用于初始化时补全
 HISTORY_START = 20250101
+#
+# 是否在启动时补全日线历史数据：
+# 1 / true  表示补全（推荐首次运行或更换标的池时开启）
+# 0 / false 表示关闭（数据已齐全或仅做快速调试时可关闭）
+DOWNLOAD_HISTORY = 1
+
+[STRATEGY]
+# 策略名称：BreakPrevHighLimitUp / SimplePolling
+NAME = BreakPrevHighLimitUp
+#
+# 单仓最大资金占总资产的比例（0~1 之间的小数）
+# 例如：0.1 表示单只股票最多使用当前总资产的 10% 金额买入，
+# 实际下单金额仍会受当前可用现金限制（不足则用全部可用现金）。
+BUY_CASH_RATIO = 0.1
