@@ -23,17 +23,8 @@ class SimplePollingStrategy(BaseStrategy):
     def on_init(self) -> None:
         """初始化：读配置、连接行情与交易、更新历史数据。"""
         logger.info("[%s] 初始化开始", self.name)
-        # 连接行情（若尚未连接）
-        if not self.data.is_connected:
-            self.data.connect()
-        # 从配置读取账号与路径并连接交易（若配置存在）
-        try:
-            account_id = self.config.get("ACCOUNT", "ACCOUNT_ID") if hasattr(self.config, "get") else None
-            userdata = self.config.get("ACCOUNT", "MINI_QMT_PATH") if hasattr(self.config, "get") else None
-            if account_id and userdata and not self.trade.is_connected:
-                self.trade.connect()
-        except Exception as e:
-            logger.warning("[%s] 交易连接跳过（无配置或失败）: %s", self.name, e)
+        self.ensure_data_connected()
+        self.ensure_trade_connected_from_config()
         # 示例：为股池下载近期日线（股池在 on_prepare 里设置后再下载也可）
         logger.info("[%s] 初始化完成", self.name)
 
