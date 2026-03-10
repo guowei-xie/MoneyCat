@@ -50,3 +50,6 @@ Thumbs.db
 # 本地/临时数据（按需取消注释）
 # userdata_mini/
 # datadir/
+
+# 本地 SQLite 交易记录数据库
+trade_records.db

@@ -7,7 +7,8 @@
 - **行情与交易封装**：统一封装 `xtdata` / `xttrader`，提供 `DataBroker` / `TradeBroker` / `AccountBroker`。
 - **统一股票池**：自动构建「沪深 A 股主板」股票池，可选补全日线历史数据。
 - **策略运行框架**：`BaseStrategy.run()` 串起「初始化 → 盘前准备 → 盘中轮询 → 盘后总结」全流程。
-- **通知能力**：可选接入飞书群自定义机器人，推送异常与关键节点提示。
+- **通知能力**：可选接入飞书群自定义机器人，推送异常与关键节点提示、策略日结摘要。
+- **本地交易记录**：使用 SQLite 记录所有委托 / 成交 / 撤单事件，便于盘后统计与排查。
 
 ## 快速开始
 
@@ -43,6 +44,10 @@
    [STRATEGY]
    NAME = BreakPrevHighLimitUp   # 或 SimplePolling
    BUY_CASH_RATIO = 0.1
+   
+   [DB]
+   # 本地交易记录 SQLite 数据库路径（可选，默认 trade_records.db，位于项目根目录）
+   TRADE_DB_PATH = trade_records.db
    ```
 
 3. **启动策略**
@@ -84,7 +89,26 @@ MoneyCat/
   - 实盘向的「突破前高涨停打板」策略：
     - 盘前：基于主板股票池与近 N 日日线，筛选接近前高的标的并构建预买入 / 预卖出池；
     - 盘中：结合 tick 与 1 分钟分时，在 9:30–11:00 内根据涨停接近度、前高突破情况与 MACD 等条件发出买卖指令；
-    - 盘后：输出主要统计信息，便于回顾与调试。
+    - 盘后：输出当日策略执行摘要（资金概览 / 信号与委托统计 / 股票池规模），并通过飞书发送。
+
+## 本地交易记录（SQLite）
+
+- 默认在项目根目录创建一个 SQLite 数据库文件 `trade_records.db`（可通过 `[DB].TRADE_DB_PATH` 修改路径）。
+- 所有真实的 **下单、下单失败、成交、撤单、撤单失败** 事件都会写入表 `trade_records`，主要字段包括：
+  - `event_time`：事件时间戳；
+  - `event_type`：`ORDER` / `ORDER_ERROR` / `TRADE` / `CANCEL` / `CANCEL_ERROR`；
+  - `account_id`：资金账号；
+  - `stock_code`：股票代码（带市场后缀）；
+  - `direction`：`BUY` / `SELL`；
+  - `volume` / `price` / `amount`：数量、价格、成交金额；
+  - `order_id`：委托编号；
+  - `strategy_name` / `remark`：策略名与备注（由策略传入）。
+
+你可以使用任意 SQLite 客户端或命令行快速查询，例如：
+
+```bash
+sqlite3 trade_records.db "SELECT event_time,event_type,stock_code,direction,volume,price FROM trade_records ORDER BY id DESC LIMIT 20;"
+```
 
 ## 自定义策略扩展
 
