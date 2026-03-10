@@ -69,8 +69,28 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
 
         # 资金不足日志节流：记录每只股票上次输出时间戳
         self._last_insufficient_cash_log: Dict[str, float] = {}
+        # debug 日志节流：避免盘中高频刷屏（key 形如 "buy_reject:000001.SZ"）
+        self._last_debug_log: Dict[str, float] = {}
 
         self._load_params_from_config()
+
+    def _debug_log_throttled(self, key: str, msg: str, *args: Any, interval_sec: int = 30) -> None:
+        """
+        按 key 节流输出 debug 日志，避免高频 tick 下刷屏。
+
+        :param key: 节流 key（建议包含场景与股票代码）
+        :param msg: 日志模板
+        :param args: 模板参数
+        :param interval_sec: 最小输出间隔（秒）
+        """
+        if not logger.isEnabledFor(10):  # logging.DEBUG == 10
+            return
+        now = time.time()
+        last_ts = float(self._last_debug_log.get(key, 0.0) or 0.0)
+        if now - last_ts < max(int(interval_sec), 1):
+            return
+        self._last_debug_log[key] = now
+        logger.debug(msg, *args)
 
     def _load_params_from_config(self) -> None:
         """
@@ -221,8 +241,8 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
                 holding_count = sum(1 for p in positions if float(p.get("volume", 0) or 0) > 0)
 
             msg = (
-                f"【提示】盘前准备完成：总资金={total_asset:.2f} "
-                f"持仓金额={market_value:.2f} 持仓数量={holding_count} 预选数量={preselect_count}"
+                f"【提示】盘前准备完成：总资金 {total_asset:.2f} "
+                f"持仓金额{market_value:.2f} 持仓数量{holding_count} 预选数量{preselect_count}"
             )
             feishu_send_text(msg)
         except Exception as exc:
@@ -433,6 +453,17 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             # 仅当 tick 涨幅已接近涨停，且当前价已大于前高时，才拉取分时 K 做进一步信号判断
             if last_price / pre_close >= (1 + self.limit_near_pct) and last_price > prev_high:
                 buy_candidates.append(code)
+                self._debug_log_throttled(
+                    f"buy_candidate:{code}",
+                    "[%s] 盘中候选: %s last=%.2f pre_close=%.2f涨幅=%.4f prev_high=%.2f",
+                    self.name,
+                    code,
+                    last_price,
+                    pre_close,
+                    (last_price / pre_close - 1) if pre_close > 0 else 0.0,
+                    prev_high,
+                    interval_sec=15,
+                )
 
         # 卖出池默认全部监控，无需根据 tick_data 再做筛选
         sell_candidates = list(self.pre_sell_pool)
@@ -440,6 +471,19 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         kline_codes = sorted(set(buy_candidates) | set(sell_candidates))
         if not kline_codes:
             return
+
+        self._debug_log_throttled(
+            "tick_summary",
+            "[%s] 盘中轮询: tick=%s 预买池=%s 预卖池=%s 买候选=%s 卖监控=%s 拉取1mK=%s",
+            self.name,
+            len(watch_codes),
+            len(self.pre_buy_pool),
+            len(self.pre_sell_pool),
+            len(buy_candidates),
+            len(sell_candidates),
+            len(kline_codes),
+            interval_sec=20,
+        )
 
         # 获取当日所有 1 分钟分时 K 线（买入逻辑内部仍会通过 buy_max_bars 限制时间窗）
         minute_bars = self.data.get_kline_bars(
@@ -471,12 +515,28 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         """
         # 若已经有持仓，则本策略不再加仓，与回测版行为保持一致
         if self._has_position(stock_code):
+            self._debug_log_throttled(
+                f"buy_reject_has_pos:{stock_code}",
+                "[%s] 买入跳过(已持仓): %s",
+                self.name,
+                stock_code,
+                interval_sec=60,
+            )
             return None
 
         if bars is None or bars.empty or stock_code not in self.cached:
             return None
         # 分时根数限制：第 90 根大致对应 11:00
         if len(bars) > self.buy_max_bars:
+            self._debug_log_throttled(
+                f"buy_reject_timewin:{stock_code}",
+                "[%s] 买入跳过(超出时间窗): %s minute_k=%s max=%s",
+                self.name,
+                stock_code,
+                len(bars),
+                self.buy_max_bars,
+                interval_sec=60,
+            )
             return None
 
         pre_close = float(self.cached[stock_code].get("pre_close", 0) or 0)
@@ -491,12 +551,31 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         # 开盘价涨幅不能大于 limit_near_pct
         day_open = float(bars.iloc[0]["open"])
         if day_open > limit_threshold:
+            self._debug_log_throttled(
+                f"buy_reject_open_high:{stock_code}",
+                "[%s] 买入跳过(开盘过高): %s open=%.2f threshold=%.2f pre_close=%.2f",
+                self.name,
+                stock_code,
+                day_open,
+                limit_threshold,
+                pre_close,
+                interval_sec=30,
+            )
             return None
 
         # 当前分时之前不允许已触发过接近涨停
         if len(bars) > 1:
             high_before = float(bars.iloc[:-1]["high"].max())
             if high_before >= limit_threshold:
+                self._debug_log_throttled(
+                    f"buy_reject_hit_before:{stock_code}",
+                    "[%s] 买入跳过(此前已接近涨停): %s high_before=%.2f threshold=%.2f",
+                    self.name,
+                    stock_code,
+                    high_before,
+                    limit_threshold,
+                    interval_sec=30,
+                )
                 return None
 
         # 1) 当前价是否接近涨停
@@ -504,6 +583,16 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             return None
         # 2) 当日最低价或昨收是否曾低于前高
         if intraday_low >= prev_high and pre_close >= prev_high:
+            self._debug_log_throttled(
+                f"buy_reject_no_pullback:{stock_code}",
+                "[%s] 买入跳过(无回踩): %s low=%.2f pre_close=%.2f prev_high=%.2f",
+                self.name,
+                stock_code,
+                intraday_low,
+                pre_close,
+                prev_high,
+                interval_sec=30,
+            )
             return None
         # 3) 当前价必须突破前高
         if current_price <= prev_high:
@@ -511,8 +600,31 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
 
         volume = self._calc_buy_volume(current_price)
         if volume <= 0:
+            self._log_insufficient_cash(stock_code, current_price)
+            self._debug_log_throttled(
+                f"buy_reject_volume0:{stock_code}",
+                "[%s] 买入跳过(可买量为0): %s price=%.2f total_asset/cash不足或比例过低",
+                self.name,
+                stock_code,
+                current_price,
+                interval_sec=60,
+            )
             return None
 
+        self._debug_log_throttled(
+            f"buy_signal:{stock_code}",
+            "[%s] 买入信号: %s price=%.2f low=%.2f prev_high=%.2f pre_close=%.2f threshold=%.2f vol=%s k=%s",
+            self.name,
+            stock_code,
+            current_price,
+            intraday_low,
+            prev_high,
+            pre_close,
+            limit_threshold,
+            volume,
+            len(bars),
+            interval_sec=10,
+        )
         return {
             "action": "buy",
             "stock_code": stock_code,
@@ -582,10 +694,26 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         closed_bars = bars.iloc[:-1]
         macd_df = get_macd(closed_bars)
         if is_macd_top(macd_df):
+            new_top_price = float(closed_bars.iloc[-1]["close"])
+            new_top_macd = float(macd_df.iloc[-1]["macd"])
+            old_top_price = float(self.cached.get(stock_code, {}).get("top_price", 0.0) or 0.0)
+            old_top_macd = float(self.cached.get(stock_code, {}).get("top_macd", 0.0) or 0.0)
             self._update_top_cache(
                 stock_code,
-                top_price=float(closed_bars.iloc[-1]["close"]),
-                top_macd=float(macd_df.iloc[-1]["macd"]),
+                top_price=new_top_price,
+                top_macd=new_top_macd,
+            )
+            self._debug_log_throttled(
+                f"macd_top_refresh:{stock_code}",
+                "[%s] MACD顶点刷新: %s new_top=(%.2f,%.6f) old_top=(%.2f,%.6f) closed_k=%s",
+                self.name,
+                stock_code,
+                new_top_price,
+                new_top_macd,
+                old_top_price,
+                old_top_macd,
+                len(closed_bars),
+                interval_sec=20,
             )
 
     def _get_sell_volume_by_batch(self, stock_code: str, available_volume: int) -> int:
@@ -626,7 +754,17 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         if gap < self.sell_broken_limit_gap_minutes:
             return None
 
-        logger.debug("%s 触发炸板清仓 gap=%s", stock_code, gap)
+        self._debug_log_throttled(
+            f"sell_broken:{stock_code}",
+            "[%s] 触发炸板清仓: %s current=%.2f limit_up=%.2f gap(min)=%s high_max=%.2f",
+            self.name,
+            stock_code,
+            current_price,
+            float(limit_price_up),
+            gap,
+            float(bars["high"].max()),
+            interval_sec=10,
+        )
         return {
             "action": "sell",
             "stock_code": stock_code,
@@ -660,6 +798,20 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         self.cached[stock_code]["batch_sell_count"] = max(remain - 1, 0)
         self._update_top_cache(stock_code, current_price, current_macd)
 
+        self._debug_log_throttled(
+            f"sell_macd_top:{stock_code}",
+            "[%s] 分批止盈(MACD顶/背离): %s price=%.2f macd=%.6f 卖量=%s 可卖=%s batch_remain=%s last_top=(%.2f,%.6f)",
+            self.name,
+            stock_code,
+            current_price,
+            current_macd,
+            int(sell_volume),
+            int(available_volume),
+            int(self.cached[stock_code].get("batch_sell_count", 0) or 0),
+            float(top_ctx.get("last_top_price", 0.0) or 0.0),
+            float(top_ctx.get("last_top_macd", 0.0) or 0.0),
+            interval_sec=10,
+        )
         return {
             "action": "sell",
             "stock_code": stock_code,
@@ -691,6 +843,15 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
 
         # 当前在涨停价附近则不卖
         if is_limit(stock_code, current_price, yesterday_close):
+            self._debug_log_throttled(
+                f"sell_skip_limit:{stock_code}",
+                "[%s] 卖出跳过(涨停不卖): %s price=%.2f pre_close=%.2f",
+                self.name,
+                stock_code,
+                current_price,
+                yesterday_close,
+                interval_sec=30,
+            )
             return None
 
         # 炸板清仓优先
@@ -718,15 +879,27 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         volume = int(signal["volume"])
         if volume <= 0 or price <= 0:
             return
-        order_id = self.trade.buy(code, volume, price, strategy_name=self.name, order_remark=signal.get("desc", ""))
-        logger.info(
-            "[%s] 买入委托: %s 价=%.2f 量=%s 返回单号=%s",
-            self.name,
-            code,
-            price,
-            volume,
-            order_id,
-        )
+        try:
+            order_id = self.trade.buy(code, volume, price, strategy_name=self.name, order_remark=signal.get("desc", ""))
+            logger.info(
+                "[%s] 买入委托: %s 价=%.2f 量=%s 返回单号=%s",
+                self.name,
+                code,
+                price,
+                volume,
+                order_id,
+            )
+            self._debug_log_throttled(
+                f"order_buy:{code}",
+                "[%s] 买入回执: %s order_id=%s signal=%s",
+                self.name,
+                code,
+                order_id,
+                signal,
+                interval_sec=10,
+            )
+        except Exception as exc:
+            logger.exception("[%s] 买入下单异常: %s %s 价=%.2f 量=%s err=%s", self.name, code, signal.get("desc", ""), price, volume, exc)
 
     def _execute_sell(self, signal: Dict[str, Any]) -> None:
         """
@@ -737,15 +910,27 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         volume = int(signal["volume"])
         if volume <= 0 or price <= 0:
             return
-        order_id = self.trade.sell(code, volume, price, strategy_name=self.name, order_remark=signal.get("desc", ""))
-        logger.info(
-            "[%s] 卖出委托: %s 价=%.2f 量=%s 返回单号=%s",
-            self.name,
-            code,
-            price,
-            volume,
-            order_id,
-        )
+        try:
+            order_id = self.trade.sell(code, volume, price, strategy_name=self.name, order_remark=signal.get("desc", ""))
+            logger.info(
+                "[%s] 卖出委托: %s 价=%.2f 量=%s 返回单号=%s",
+                self.name,
+                code,
+                price,
+                volume,
+                order_id,
+            )
+            self._debug_log_throttled(
+                f"order_sell:{code}",
+                "[%s] 卖出回执: %s order_id=%s signal=%s",
+                self.name,
+                code,
+                order_id,
+                signal,
+                interval_sec=10,
+            )
+        except Exception as exc:
+            logger.exception("[%s] 卖出下单异常: %s %s 价=%.2f 量=%s err=%s", self.name, code, signal.get("desc", ""), price, volume, exc)
 
     def on_after_close(self) -> None:
         """

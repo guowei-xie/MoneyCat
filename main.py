@@ -102,10 +102,10 @@ def main() -> None:
         strategy = SimplePollingStrategy(config, data_broker, trade_broker, account_broker)
     try:
         strategy.run()
-        feishu_send_text(f"【提示】策略 {strategy_name} 运行已正常结束。")
+        feishu_send_text("【提示】策略运行已正常结束。")
     except Exception as exc:
         logger.exception("策略运行过程中发生未捕获异常：%s", exc)
-        feishu_send_text(f"【错误】策略 {strategy_name} 运行异常：{exc}")
+        feishu_send_text(f"【错误】策略运行异常：{exc}")
         raise
     finally:
         if trade_broker.is_connected:
