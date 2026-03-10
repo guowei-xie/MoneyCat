@@ -435,6 +435,18 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         """
         买入信号：接近涨停 + 低于前高回踩 + 当前价突破前高，且只在 9:30~11:00 时间窗内生效。
         """
+        # 若该标的已有未完全成交买单，直接跳过，避免高频 tick 下重复发送买入委托
+        if self.has_unfinished_buy_order(stock_code):
+            self._log_throttled(
+                f"buy_reject_pending_order:{stock_code}",
+                "debug",
+                "[%s] 买入跳过(已有未成交买单): %s",
+                self.name,
+                stock_code,
+                interval_sec=30,
+            )
+            return None
+
         # 若已经有持仓，则本策略不再加仓，与回测版行为保持一致
         if self.has_position(stock_code):
             self._log_throttled(

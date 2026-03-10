@@ -217,6 +217,38 @@ class BaseStrategy(ABC):
         unfinished.sort(key=lambda x: getattr(x, "order_time", 0))
         return unfinished
 
+    def has_unfinished_buy_order(self, stock_code: str) -> bool:
+        """
+        判断指定股票是否存在“未完全成交”的买入委托。
+
+        用途：盘中高频轮询下，避免同一标的在首笔买单未成交/部分成交时重复下单。
+
+        :param stock_code: 股票代码（与委托对象的 stock_code 字段一致）
+        :return: True 表示存在未完全成交的买入委托；否则 False
+        """
+        if not stock_code:
+            return False
+        try:
+            from xtquant import xtconstant  # 延迟导入，避免无交易环境时报错
+        except Exception:
+            # 无交易环境下无法判断委托方向，默认不拦截
+            return False
+
+        for o in self.get_unfinished_orders():
+            try:
+                if str(getattr(o, "stock_code", "") or "") != stock_code:
+                    continue
+                order_type = int(getattr(o, "order_type", 0) or 0)
+                if order_type != xtconstant.STOCK_BUY:
+                    continue
+                order_volume = int(getattr(o, "order_volume", 0) or 0)
+                traded_volume = int(getattr(o, "traded_volume", 0) or 0)
+                if order_volume > 0 and traded_volume < order_volume:
+                    return True
+            except Exception:
+                continue
+        return False
+
     def cancel_earliest_unfilled_buy_order(self) -> bool:
         """
         撤掉最新的未完全成交买入委托，用于释放被占用资金。
