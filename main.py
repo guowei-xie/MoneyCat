@@ -23,6 +23,7 @@ from utils.feishu_notify import init_from_config, send_text as feishu_send_text
 from broker.data import DataBroker
 from broker.trade import TradeBroker
 from broker.account import AccountBroker
+from db.trade_store import init_trade_store
 from strategy.simple_polling import SimplePollingStrategy
 from strategy.break_prev_high_limitup import BreakPrevHighLimitUpStrategy
 
@@ -44,6 +45,11 @@ def main() -> None:
     setup_logger(level=log_level)
     # 初始化飞书通知配置（可在 config.ini 中关闭或自定义 webhook）
     init_from_config(config)
+    # 初始化本地 SQLite 交易记录数据库（可在 config.ini 中通过 [DB] 配置路径）
+    trade_db_path = "trade_records.db"
+    if isinstance(config, ConfigParser) and config.has_section("DB"):
+        trade_db_path = config.get("DB", "TRADE_DB_PATH", fallback=trade_db_path)
+    init_trade_store(trade_db_path)
 
     # 2) 可选：非交易日直接退出（演示时可注释）
     if not is_trading_day():

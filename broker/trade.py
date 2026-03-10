@@ -15,6 +15,7 @@ from xtquant import xtconstant
 from logging_config import logger
 from utils.common import add_stock_suffix
 from utils.feishu_notify import send_text as feishu_send_text
+from db.trade_store import get_trade_store
 
 
 def _format_hms(value) -> str:
@@ -69,6 +70,13 @@ def _trade_callback_notify(trade) -> None:
         if name:
             msg = msg.replace(f" {code} ", f" {code}({name}) ")
         feishu_send_text(msg)
+        # 记录成交到本地 SQLite
+        store = get_trade_store()
+        if store is not None:
+            try:
+                store.log_trade_callback(trade)
+            except Exception as log_err:
+                logger.warning("成交回调写入本地数据库失败: %s", log_err)
     except Exception as e:
         logger.warning("成交回调飞书通知异常: %s", e)
 
@@ -204,6 +212,20 @@ class TradeBroker:
         if not self.is_connected:
             logger.error("交易未连接，无法下单")
             feishu_send_text(f"【警告】下单时交易未连接 {stock_code} 数量 {volume} 价格 {price:.2f}")
+            # 本地记录下单失败
+            store = get_trade_store()
+            if store is not None:
+                store.log_order(
+                    account_id=self.account_id,
+                    stock_code=stock_code,
+                    order_type=order_type,
+                    volume=volume,
+                    price=price,
+                    strategy_name=strategy_name,
+                    order_remark=order_remark,
+                    success=False,
+                    error_msg="trade not connected",
+                )
             return -1
         code = add_stock_suffix(stock_code)
         try:
@@ -219,16 +241,62 @@ class TradeBroker:
             )
             if seq is not None and int(seq) >= 0:
                 logger.info("委托已发送 %s %s 数量=%s 价格=%s 单号=%s", "买" if order_type == xtconstant.STOCK_BUY else "卖", code, volume, price, seq)
+                # 记录本地下单成功
+                store = get_trade_store()
+                if store is not None:
+                    try:
+                        store.log_order(
+                            account_id=self.account_id,
+                            stock_code=code,
+                            order_type=order_type,
+                            volume=volume,
+                            price=price,
+                            strategy_name=strategy_name,
+                            order_remark=order_remark,
+                            order_id=int(seq),
+                            success=True,
+                        )
+                    except Exception as log_err:
+                        logger.warning("下单写入本地数据库失败: %s", log_err)
                 # 委托通知仅推送买入，忽略卖出委托
                 if order_type == xtconstant.STOCK_BUY:
                     feishu_send_text(
                         f"【委托】买入 {code} 数量 {volume} 价格 {price:.2f} 单号 {int(seq)} 备注 {order_remark or '-'}"
                     )
                 return int(seq)
+            # 写入下单失败记录
+            store = get_trade_store()
+            if store is not None:
+                store.log_order(
+                    account_id=self.account_id,
+                    stock_code=code,
+                    order_type=order_type,
+                    volume=volume,
+                    price=price,
+                    strategy_name=strategy_name,
+                    order_remark=order_remark,
+                    order_id=seq,
+                    success=False,
+                    error_msg="order_stock returned invalid seq",
+                )
             return -1
         except Exception as e:
             logger.error("下单异常 %s: %s", code, e)
             feishu_send_text(f"【错误】下单异常 {code} 异常 {e}")
+            # 写入异常记录
+            store = get_trade_store()
+            if store is not None:
+                store.log_order(
+                    account_id=self.account_id,
+                    stock_code=code,
+                    order_type=order_type,
+                    volume=volume,
+                    price=price,
+                    strategy_name=strategy_name,
+                    order_remark=order_remark,
+                    success=False,
+                    error_msg=str(e),
+                )
             return -1
 
     def buy(self, stock_code: str, volume: int, price: float, strategy_name: str = "", order_remark: str = "") -> int:
@@ -248,16 +316,46 @@ class TradeBroker:
         """
         if not self.is_connected:
             logger.error("交易未连接，无法撤单")
+            store = get_trade_store()
+            if store is not None:
+                store.log_cancel(
+                    account_id=self.account_id,
+                    order_id=order_id,
+                    success=False,
+                    error_msg="trade not connected",
+                )
             return -1
         try:
             ret = self._trader.cancel_order_stock(self._account, order_id)
+            store = get_trade_store()
             if ret == 0:
                 logger.info("撤单成功 order_id=%s", order_id)
+                if store is not None:
+                    store.log_cancel(
+                        account_id=self.account_id,
+                        order_id=order_id,
+                        success=True,
+                    )
             else:
                 logger.warning("撤单失败 order_id=%s ret=%s", order_id, ret)
+                if store is not None:
+                    store.log_cancel(
+                        account_id=self.account_id,
+                        order_id=order_id,
+                        success=False,
+                        error_msg=f"ret={ret}",
+                    )
             return ret
         except Exception as e:
             logger.error("撤单异常 order_id=%s: %s", order_id, e)
+            store = get_trade_store()
+            if store is not None:
+                store.log_cancel(
+                    account_id=self.account_id,
+                    order_id=order_id,
+                    success=False,
+                    error_msg=str(e),
+                )
             return -1
 
     def stop(self) -> None:

@@ -22,6 +22,7 @@ from utils.position_sizing import convert_to_safe_sell_volume
 from utils.indicators import get_macd, is_macd_top
 from utils.feishu_notify import send_text as feishu_send_text
 from utils.optional import get_tqdm
+from db.trade_store import get_trade_store
 
 tqdm = get_tqdm()
 
@@ -65,6 +66,14 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
 
         # 收盘前是否已执行过一次“撤掉所有未成交订单”
         self._has_canceled_unfilled_orders_before_close: bool = False
+
+        # ↓ 当日策略统计相关字段（用于盘后摘要）
+        self._start_total_asset: float = 0.0
+        self._start_market_value: float = 0.0
+        self._buy_signal_count: int = 0
+        self._sell_signal_count: int = 0
+        self._buy_order_count: int = 0
+        self._sell_order_count: int = 0
 
         self._load_params_from_config()
 
@@ -198,6 +207,10 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
                 asset = self.account.get_asset() or {}
                 total_asset = float(asset.get("total_asset", 0) or 0)
                 market_value = float(asset.get("market_value", 0) or 0)
+
+            # 记录日初资金概览，供盘后统计使用
+            self._start_total_asset = total_asset
+            self._start_market_value = market_value
 
             msg = (
                 f"【提示】盘前准备完成：总资金 {total_asset:.2f} "
@@ -591,6 +604,8 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             len(bars),
             interval_sec=10,
         )
+        # 统计买入信号次数
+        self._buy_signal_count += 1
         return {
             "action": "buy",
             "stock_code": stock_code,
@@ -827,13 +842,18 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         # 炸板清仓优先
         broken_sig = self._sell_broken_limit(stock_code, bars, yesterday_close, available_volume)
         if broken_sig is not None:
+            # 统计卖出信号次数
+            self._sell_signal_count += 1
             return broken_sig
 
         # MACD 顶 / 顶背离分批止盈
         top_ctx = self._check_macd_top_gate(stock_code, bars)
         if top_ctx is not None:
             # _sell_batch_on_macd_top 内部已调用 _update_top_cache，直接返回信号
-            return self._sell_batch_on_macd_top(stock_code, bars, available_volume, top_ctx)
+            sig = self._sell_batch_on_macd_top(stock_code, bars, available_volume, top_ctx)
+            if sig is not None:
+                self._sell_signal_count += 1
+            return sig
 
         # 未触发任何卖出信号，但若当前分钟存在 MACD 顶点，则仅刷新顶点缓存，供后续分钟做背离对比
         self._refresh_top_cache_on_macd_top(stock_code, bars)
@@ -852,6 +872,8 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         order_id = self.place_buy_order(code, volume, price, remark=str(signal.get("desc", "") or ""))
         if order_id is None:
             return
+        # 统计买入委托次数
+        self._buy_order_count += 1
         self._log_throttled(
             f"order_buy:{code}",
             "debug",
@@ -875,6 +897,8 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         order_id = self.place_sell_order(code, volume, price, remark=str(signal.get("desc", "") or ""))
         if order_id is None:
             return
+        # 统计卖出委托次数
+        self._sell_order_count += 1
         self._log_throttled(
             f"order_sell:{code}",
             "debug",
@@ -890,5 +914,60 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         """
         盘后总结：当前缓存中仍有的分批次数等信息仅做调试打印。
         """
-        pass
+        logger.info("[%s] 盘后总结开始", self.name)
+
+        # 盘后再次获取账户资产与持仓，用于生成当日策略摘要
+        end_total_asset = 0.0
+        end_market_value = 0.0
+        positions: List[Dict[str, Any]] = []
+        try:
+            if getattr(self.account, "_connected", None) and self.account._connected():
+                asset = self.account.get_asset() or {}
+                end_total_asset = float(asset.get("total_asset", 0) or 0)
+                end_market_value = float(asset.get("market_value", 0) or 0)
+                positions = self.account.get_positions() or []
+        except Exception as exc:
+            logger.warning("[%s] 盘后获取账户信息失败: %s", self.name, exc)
+
+        # 计算当日盈亏与收益率
+        pnl = 0.0
+        pnl_pct_str = "N/A"
+        if self._start_total_asset > 0:
+            pnl = end_total_asset - self._start_total_asset
+            pnl_pct = pnl / self._start_total_asset
+            pnl_pct_str = f"{pnl_pct:.2%}"
+
+        account_id = ""
+        try:
+            account_id = str(getattr(self.trade, "account_id", "") or "")
+        except Exception:
+            account_id = ""
+
+        # 组装精简版策略执行摘要
+        hold_count = len(positions)
+        msg = (
+            f"【策略日结】{self.name}\n"
+            f"日期：{current_date_str()}\n"
+            f"账号：{account_id or '-'}\n"
+            "------------------------------\n"
+            "资金概览：\n"
+            f"- 日初总资产：{self._start_total_asset:.2f}\n"
+            f"- 日末总资产：{end_total_asset:.2f}\n"
+            f"- 当日盈亏：{pnl:.2f}（{pnl_pct_str}）\n"
+            "\n"
+            "交易统计：\n"
+            f"- 买入信号：{self._buy_signal_count}  卖出信号：{self._sell_signal_count}\n"
+            f"- 买入委托：{self._buy_order_count}  卖出委托：{self._sell_order_count}\n"
+            "\n"
+            "股票池概览：\n"
+            f"- 预选股票数：{len(self.pre_buy_pool)}  预卖股票数：{len(self.pre_sell_pool)}  当前持仓数：{hold_count}\n"
+        )
+
+        logger.info("[%s] 当日策略执行摘要：\n%s", self.name, msg.replace("\n", " | "))
+        try:
+            feishu_send_text(msg)
+        except Exception as exc:
+            logger.warning("[%s] 盘后策略摘要飞书推送失败: %s", self.name, exc)
+
+        logger.info("[%s] 盘后总结完成", self.name)
 
