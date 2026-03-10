@@ -19,6 +19,7 @@ if ROOT not in sys.path:
 from configparser import ConfigParser
 from logging_config import logger, setup_logger
 from utils.common import is_trading_day
+from utils.feishu_notify import init_from_config, send_text as feishu_send_text
 from broker.data import DataBroker
 from broker.trade import TradeBroker
 from broker.account import AccountBroker
@@ -41,10 +42,13 @@ def main() -> None:
     config = load_config()
     log_level = config.get("LOG", "LEVEL", fallback="INFO")
     setup_logger(level=log_level)
+    # 初始化飞书通知配置（可在 config.ini 中关闭或自定义 webhook）
+    init_from_config(config)
 
     # 2) 可选：非交易日直接退出（演示时可注释）
     if not is_trading_day():
         logger.info("当前不是交易日，程序退出。若仅演示框架可注释本段。")
+        feishu_send_text("【提示】当前不是交易日，程序已退出。")
         return
 
     # 3) 初始化：创建 broker 并连接
@@ -57,12 +61,14 @@ def main() -> None:
     # 连接行情
     if not data_broker.connect():
         logger.error("行情连接失败，请确认 MiniQMT 已启动")
+        feishu_send_text("【错误】行情连接失败，请检查 MiniQMT/xtdata 服务。")
         return
 
     # 连接交易（若配置了账号与路径）
     if account_id and mini_qmt_path and os.path.isdir(mini_qmt_path):
         if not trade_broker.connect():
             logger.warning("交易连接失败，将仅运行行情与策略逻辑，不执行实盘下单")
+            # 飞书通知由 TradeBroker.connect() 内按具体原因已发送，此处不再重复
     else:
         logger.info("未配置 ACCOUNT_ID / MINI_QMT_PATH，跳过交易连接")
 
@@ -70,6 +76,7 @@ def main() -> None:
     main_board_pool = data_broker.get_stock_list_in_main_board()
     if not main_board_pool:
         logger.error("主板股票池获取失败（需要板块数据/行情服务可用），程序退出")
+        feishu_send_text("【错误】主板股票池获取失败，请检查行情服务与板块数据。")
         return
     logger.info("主板股票池获取完成：%d 只", len(main_board_pool))
 
@@ -95,6 +102,11 @@ def main() -> None:
         strategy = SimplePollingStrategy(config, data_broker, trade_broker, account_broker)
     try:
         strategy.run()
+        feishu_send_text(f"【提示】策略 {strategy_name} 运行已正常结束。")
+    except Exception as exc:
+        logger.exception("策略运行过程中发生未捕获异常：%s", exc)
+        feishu_send_text(f"【错误】策略 {strategy_name} 运行异常：{exc}")
+        raise
     finally:
         if trade_broker.is_connected:
             trade_broker.stop()

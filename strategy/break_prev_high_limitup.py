@@ -20,6 +20,7 @@ from utils.common import get_trading_dates, current_date_str
 from utils.market_rules import is_limit, get_limit_price
 from utils.position_sizing import convert_to_safe_sell_volume
 from utils.indicators import get_macd, is_macd_top
+from utils.feishu_notify import send_text as feishu_send_text
 
 try:
     from tqdm import tqdm
@@ -194,6 +195,38 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             len(self.pre_buy_pool),
             len(self.pre_sell_pool),
         )
+        self._notify_prepare_account_summary()
+
+    def _notify_prepare_account_summary(self) -> None:
+        """
+        盘前准备结束后推送账户摘要信息，减少盯盘负担。
+
+        推送内容包含：
+        - 总资金（total_asset）
+        - 持仓金额（market_value）
+        - 持仓数量（持仓股票只数）
+        - 预选数量（预买池数量）
+        """
+        total_asset = 0.0
+        market_value = 0.0
+        holding_count = 0
+        preselect_count = len(self.pre_buy_pool)
+
+        try:
+            if getattr(self.account, "_connected", None) and self.account._connected():
+                asset = self.account.get_asset() or {}
+                total_asset = float(asset.get("total_asset", 0) or 0)
+                market_value = float(asset.get("market_value", 0) or 0)
+                positions = self.account.get_positions() or []
+                holding_count = sum(1 for p in positions if float(p.get("volume", 0) or 0) > 0)
+
+            msg = (
+                f"【提示】盘前准备完成：总资金={total_asset:.2f} "
+                f"持仓金额={market_value:.2f} 持仓数量={holding_count} 预选数量={preselect_count}"
+            )
+            feishu_send_text(msg)
+        except Exception as exc:
+            logger.warning("[%s] 盘前账户摘要推送失败: %s", self.name, exc)
 
     def _get_yesterday_trade_date(self) -> Optional[str]:
         """

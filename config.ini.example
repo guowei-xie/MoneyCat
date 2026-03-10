@@ -10,6 +10,12 @@ MINI_QMT_PATH = C:\path\to\userdata
 # 日志级别: DEBUG / INFO / WARNING / ERROR
 LEVEL = INFO
 
+[FEISHU]
+# 是否启用飞书群自定义机器人通知（1/true 为启用，0/false 为关闭）
+ENABLE = 1
+# 飞书群机器人 webhook 地址（在飞书群设置-群机器人-自定义机器人中获取）
+WEBHOOK = https://open.feishu.cn/open-apis/bot/v2/hook/202bdaf1-0f7b-4208-9691-e2681373f26a
+
 [DATA]
 # 历史数据下载起始日期，用于初始化时补全
 HISTORY_START = 20250101

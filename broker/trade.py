@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 交易模块：委托下单、撤单等订单操作，基于 xttrader。
+支持委托成功与成交成功时的飞书通知（成交通过 xt 的 on_stock_trade 回调）。
 """
 import random
 import sys
@@ -10,11 +11,101 @@ _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
-from xtquant.xttrader import XtQuantTrader
+from xtquant.xttrader import XtQuantTrader, XtQuantTraderCallback
 from xtquant.xttype import StockAccount
 from xtquant import xtconstant
 from logging_config import logger
 from utils.common import add_stock_suffix
+from utils.feishu_notify import send_text as feishu_send_text
+
+
+def _trade_callback_notify(trade) -> None:
+    """
+    根据 XtTrade 成交对象组装飞书文案并发送（成交成功回调通知）。
+    :param trade: XtTrade，属性含 stock_code, order_type, traded_volume, traded_price, traded_amount, traded_time, order_id, strategy_name, order_remark 等
+    """
+    try:
+        code = getattr(trade, "stock_code", "") or ""
+        order_type = getattr(trade, "order_type", 0)
+        direction = "买入" if order_type == xtconstant.STOCK_BUY else "卖出"
+        vol = getattr(trade, "traded_volume", 0) or 0
+        price = getattr(trade, "traded_price", 0) or 0
+        amount = getattr(trade, "traded_amount", 0) or 0
+        traded_time = getattr(trade, "traded_time", "") or ""
+        order_id = getattr(trade, "order_id", "") or ""
+        strategy_name = getattr(trade, "strategy_name", "") or ""
+        remark = getattr(trade, "order_remark", "") or ""
+        name = getattr(trade, "instrument_name", "") or ""
+        msg = (
+            f"【成交】{direction} {code}"
+            f" 数量={vol} 成交价={price:.2f} 金额={amount:.2f}"
+            f" 时间={traded_time} 委托号={order_id}"
+            f" 策略={strategy_name or '-'} 备注={remark or '-'}"
+        )
+        if name:
+            msg = msg.replace(f" {code} ", f" {code}({name}) ")
+        feishu_send_text(msg)
+    except Exception as e:
+        logger.warning("成交回调飞书通知异常: %s", e)
+
+
+class _FeishuTradeCallback(XtQuantTraderCallback):
+    """仅做成交成功飞书通知的 callback，其它回调空实现。"""
+
+    def on_stock_trade(self, trade):
+        _trade_callback_notify(trade)
+
+
+class _FeishuTradeCallbackWrapper(XtQuantTraderCallback):
+    """包装用户 callback：成交时先发飞书通知，再转发用户 on_stock_trade。其它方法直接转发。"""
+
+    def __init__(self, user_callback):
+        self._user = user_callback
+
+    def on_stock_trade(self, trade):
+        _trade_callback_notify(trade)
+        if hasattr(self._user, "on_stock_trade") and callable(self._user.on_stock_trade):
+            self._user.on_stock_trade(trade)
+
+    def on_connected(self):
+        if hasattr(self._user, "on_connected") and callable(self._user.on_connected):
+            self._user.on_connected()
+
+    def on_disconnected(self):
+        if hasattr(self._user, "on_disconnected") and callable(self._user.on_disconnected):
+            self._user.on_disconnected()
+
+    def on_account_status(self, status):
+        if hasattr(self._user, "on_account_status") and callable(self._user.on_account_status):
+            self._user.on_account_status(status)
+
+    def on_stock_asset(self, asset):
+        if hasattr(self._user, "on_stock_asset") and callable(self._user.on_stock_asset):
+            self._user.on_stock_asset(asset)
+
+    def on_stock_order(self, order):
+        if hasattr(self._user, "on_stock_order") and callable(self._user.on_stock_order):
+            self._user.on_stock_order(order)
+
+    def on_stock_position(self, position):
+        if hasattr(self._user, "on_stock_position") and callable(self._user.on_stock_position):
+            self._user.on_stock_position(position)
+
+    def on_order_error(self, order_error):
+        if hasattr(self._user, "on_order_error") and callable(self._user.on_order_error):
+            self._user.on_order_error(order_error)
+
+    def on_cancel_error(self, cancel_error):
+        if hasattr(self._user, "on_cancel_error") and callable(self._user.on_cancel_error):
+            self._user.on_cancel_error(cancel_error)
+
+    def on_order_stock_async_response(self, response):
+        if hasattr(self._user, "on_order_stock_async_response") and callable(self._user.on_order_stock_async_response):
+            self._user.on_order_stock_async_response(response)
+
+    def on_cancel_order_stock_async_response(self, response):
+        if hasattr(self._user, "on_cancel_order_stock_async_response") and callable(self._user.on_cancel_order_stock_async_response):
+            self._user.on_cancel_order_stock_async_response(response)
 
 
 class TradeBroker:
@@ -26,11 +117,12 @@ class TradeBroker:
         """
         :param userdata_path: MiniQMT 的 userdata 目录路径
         :param account_id: 资金账号
-        :param callback: XtQuantTraderCallback 实例，可选
+        :param callback: XtQuantTraderCallback 实例，可选；不传时仅启用成交飞书通知
         """
         self.userdata_path = userdata_path
         self.account_id = account_id
         self.callback = callback
+        self._trader_callback = _FeishuTradeCallbackWrapper(callback) if callback else _FeishuTradeCallback()
         self._trader = None
         self._account = None
         self._connected = False
@@ -39,22 +131,25 @@ class TradeBroker:
         """连接交易并订阅账号。"""
         try:
             session_id = random.randint(100000, 999999)
-            self._trader = XtQuantTrader(self.userdata_path, session_id, self.callback)
+            self._trader = XtQuantTrader(self.userdata_path, session_id, self._trader_callback)
             self._trader.start()
             ret = self._trader.connect()
             if ret != 0:
                 logger.error("交易连接失败，返回码: %s", ret)
+                feishu_send_text(f"【错误】交易连接失败，返回码={ret} 账号={self.account_id}")
                 return False
             self._account = StockAccount(self.account_id)
             sub_ret = self._trader.subscribe(self._account)
             if sub_ret != 0:
                 logger.error("账号订阅失败，返回码: %s", sub_ret)
+                feishu_send_text(f"【错误】交易账号订阅失败，返回码={sub_ret} 账号={self.account_id}")
                 return False
             self._connected = True
             logger.info("交易连接成功，账号: %s", self.account_id)
             return True
         except Exception as e:
             logger.error("交易连接异常: %s", e)
+            feishu_send_text(f"【错误】交易连接异常，账号={self.account_id} 异常={e}")
             self._connected = False
             return False
 
@@ -84,6 +179,7 @@ class TradeBroker:
         """
         if not self.is_connected:
             logger.error("交易未连接，无法下单")
+            feishu_send_text(f"【警告】下单时交易未连接，{stock_code} 数量={volume} 价格={price}")
             return -1
         code = add_stock_suffix(stock_code)
         try:
@@ -99,10 +195,12 @@ class TradeBroker:
             )
             if seq is not None and int(seq) >= 0:
                 logger.info("委托已发送 %s %s 数量=%s 价格=%s 单号=%s", "买" if order_type == xtconstant.STOCK_BUY else "卖", code, volume, price, seq)
+                feishu_send_text(f"【委托】{'买入' if order_type == xtconstant.STOCK_BUY else '卖出'} {code} 数量={volume} 价格={price} 单号={int(seq)} 策略={strategy_name or '-'} 备注={order_remark or '-'}")
                 return int(seq)
             return -1
         except Exception as e:
             logger.error("下单异常 %s: %s", code, e)
+            feishu_send_text(f"【错误】下单异常，{code} 异常={e}")
             return -1
 
     def buy(self, stock_code: str, volume: int, price: float, strategy_name: str = "", order_remark: str = "") -> int:
