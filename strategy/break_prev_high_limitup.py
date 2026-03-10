@@ -178,6 +178,11 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         logger.info(f"{self.name} 开始订阅1分钟K线，订阅股票数={len(cache_pool)}只")
         self.data.subscribe_kline(cache_pool, period="1m", count=-1)
 
+        # 盘中若发生系统重启，仅订阅可能无法补齐“当日已产生”的历史分时。
+        # 这里在确认处于交易时段后，补全下载当日 1 分钟历史，避免后续取分时信号缺失。
+        if cache_pool:
+            self.data.ensure_today_kline_history(cache_pool, period="1m", only_if_trading_time=True)
+
         logger.info(
             "[%s] 盘前准备完成，股票池总数=%s，预买池=%s，预卖池=%s",
             self.name,

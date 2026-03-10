@@ -241,6 +241,59 @@ class DataBroker:
             except Exception as e:
                 logger.warning("订阅 K 线失败 %s: %s", code, e)
 
+    def ensure_today_kline_history(
+        self,
+        stock_list: List[str],
+        period: str = "1m",
+        *,
+        only_if_trading_time: bool = True,
+        incrementally: bool = True,
+        show_progress: bool = True,
+    ) -> None:
+        """
+        确保“当日指定周期 K 线历史”已下载到本地缓存（常用于盘中重启后的分钟线回补）。
+
+        设计意图：
+        - `subscribe_kline` 负责让 xtdata 持续增量更新；
+          但盘中重启场景下，仅订阅可能无法补齐“当日已产生”的历史分时缺口。
+        - 这里显式触发一次 `download_history_data`，将当日历史补到本地缓存，
+          供后续 `get_kline_bars(period=...)` 稳定读取。
+
+        :param stock_list: 股票代码列表（可带或不带后缀）
+        :param period: 周期，如 '1m' / '5m' / '1d'
+        :param only_if_trading_time: True 则仅在交易时段内执行（默认）
+        :param incrementally: 是否增量下载（默认 True）
+        :param show_progress: 是否显示下载进度条（默认 True）
+        """
+        codes = add_stock_suffix_list(list(stock_list or []))
+        if not codes:
+            return
+
+        if only_if_trading_time:
+            try:
+                from utils.common import is_trading_time
+                if not is_trading_time():
+                    return
+            except Exception:
+                # 无法判断时段时选择保守不执行，避免盘前无谓下载
+                return
+
+        from utils.common import current_date_str
+        today = current_date_str()
+        try:
+            logger.info("盘中回补当日K线历史开始：period=%s stocks=%s date=%s", period, len(codes), today)
+            self.download_history(
+                stock_list=codes,
+                period=period,
+                start_time=today,
+                end_time=today,
+                incrementally=incrementally,
+                progress_bar=show_progress,
+            )
+            logger.info("盘中回补当日K线历史完成：period=%s stocks=%s date=%s", period, len(codes), today)
+        except Exception as exc:
+            logger.warning("盘中回补当日K线历史失败：period=%s date=%s err=%s", period, today, exc)
+
     def get_latest_price(self, stock_code: str) -> Optional[float]:
         """获取单只股票最新价，失败返回 None。"""
         code = add_stock_suffix(stock_code)
