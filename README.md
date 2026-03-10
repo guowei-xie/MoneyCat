@@ -1,70 +1,38 @@
 # MoneyCat
 
-基于 QMT（迅投）的实盘量化交易小框架，封装 `xtquant` 行情 / 交易接口，并内置一个「突破前高涨停打板」策略与一个简单轮询示例策略，方便在此基础上继续扩展。
+基于 QMT（迅投）的**实盘量化交易小框架**：封装 `xtquant` 行情/交易接口，提供可扩展的策略运行骨架、飞书通知与本地 SQLite 交易事件落库。
 
-## 功能概览
+## 你需要准备什么
 
-- **行情与交易封装**：统一封装 `xtdata` / `xttrader`，提供 `DataBroker` / `TradeBroker` / `AccountBroker`。
-- **统一股票池**：自动构建「沪深 A 股主板」股票池，可选补全日线历史数据。
-- **策略运行框架**：`BaseStrategy.run()` 串起「初始化 → 盘前准备 → 盘中轮询 → 盘后总结」全流程。
-- **通知能力**：可选接入飞书群自定义机器人，推送异常与关键节点提示、策略日结摘要。
-- **本地交易记录**：使用 SQLite 记录所有委托 / 成交 / 撤单事件，便于盘后统计与排查。
+- **QMT 环境**：已安装并登录 **MiniQMT / QMT 投研版**，且本机可正常导入/使用 `xtquant`
+- **交易端状态**：交易端已启动并已登录（交易不可用时程序会退出，并在启用飞书时推送告警）
+- **Python**：建议 Python 3.10+
 
 ## 快速开始
 
-1. **准备环境**
-   - 安装并登录 **MiniQMT** 或 **QMT 投研版**，确保本机已安装 `xtquant`。
-   - 确保 **交易端已启动并已登录**（本项目为实盘框架：交易不可用将直接退出并飞书告警）。
-   - 安装 Python 依赖（按需调整）：
+1. **安装依赖**
 
-   ```bash
-   pip install pandas akshare tqdm
-   ```
+```bash
+pip install -r requirements.txt
+```
 
-2. **配置文件**
-   - 复制根目录下的 `config.ini.example` 为 `config.ini`，按实盘环境修改：
+2. **创建配置**
 
-   ```ini
-   [ACCOUNT]
-   ACCOUNT_ID = your_account_id
-   # MiniQMT 的 userdata 目录绝对路径（必须为目录）
-   MINI_QMT_PATH = C:\path\to\userdata
+- 复制 `config.ini.example` 为 `config.ini`
+- 至少确认以下配置正确：
+  - `[ACCOUNT].ACCOUNT_ID`：资金账号
+  - `[ACCOUNT].MINI_QMT_PATH`：MiniQMT 的 `userdata` 目录绝对路径（示例：`C:\path\to\userdata` 或 `/path/to/userdata`）
+  - `[STRATEGY].NAME`：策略名（例如 `BreakPrevHighLimitUp` 或 `SimplePolling`）
+  - （可选）`[FEISHU]`：开启后会推送关键节点与异常告警
+  - （可选）`[DB].TRADE_DB_PATH`：SQLite 文件路径（默认 `trade_records.db`）
 
-   [LOG]
-   LEVEL = INFO
+3. **运行**
 
-   [FEISHU]
-   ENABLE = 1
-   WEBHOOK = https://your-feishu-webhook
+```bash
+python main.py
+```
 
-   [DATA]
-   HISTORY_START = 20250101
-   DOWNLOAD_HISTORY = 1
-
-   [STRATEGY]
-   NAME = BreakPrevHighLimitUp   # 或 SimplePolling
-   BUY_CASH_RATIO = 0.1
-   
-   [DB]
-   # 本地交易记录 SQLite 数据库路径（可选，默认 trade_records.db，位于项目根目录）
-   TRADE_DB_PATH = trade_records.db
-   ```
-
-3. **启动策略**
-   - 确认当前为交易日（否则程序会直接退出；若你确实要在非交易日跑通流程，可自行在 `main.py` 调整交易日检查逻辑）。
-   - 确认 `ACCOUNT_ID` 与 `MINI_QMT_PATH` 配置正确且交易连接可用（否则会直接退出并飞书告警）。
-   - 在项目根目录执行：
-
-   ```bash
-   python main.py
-   ```
-
-程序会自动：
-
-- 初始化日志与飞书通知；
-- 连接行情与交易（若交易配置缺失或交易连接失败将直接退出并飞书告警）；
-- 构建主板股票池并按需补全日线历史数据；
-- 根据 `STRATEGY.NAME` 选择并运行对应策略。
+运行时会自动初始化日志/通知、连接行情与交易、构建股票池与按需补全历史数据，并按 `STRATEGY.NAME` 启动策略。
 
 ## 项目结构（简版）
 
@@ -80,29 +48,15 @@ MoneyCat/
 └── logs/                    # 日志输出目录
 ```
 
-## 内置策略
+## 内置策略（入口配置）
 
-- **SimplePollingStrategy**（`strategy/simple_polling.py`）  
-  - 小股池每秒轮询 tick，仅输出行情与“模拟信号”，不真实下单；但仍会按统一启动流程校验交易环境（交易不可用将退出并告警）。
-
-- **BreakPrevHighLimitUpStrategy**（`strategy/break_prev_high_limitup.py`）  
-  - 实盘向的「突破前高涨停打板」策略：
-    - 盘前：基于主板股票池与近 N 日日线，筛选接近前高的标的并构建预买入 / 预卖出池；
-    - 盘中：结合 tick 与 1 分钟分时，在 9:30–11:00 内根据涨停接近度、前高突破情况与 MACD 等条件发出买卖指令；
-    - 盘后：输出当日策略执行摘要（资金概览 / 信号与委托统计 / 股票池规模），并通过飞书发送。
+- **SimplePolling**：示例轮询策略，主要用于跑通订阅与框架流程
+- **BreakPrevHighLimitUp**：示例实盘策略（突破前高涨停思路）
 
 ## 本地交易记录（SQLite）
 
-- 默认在项目根目录创建一个 SQLite 数据库文件 `trade_records.db`（可通过 `[DB].TRADE_DB_PATH` 修改路径）。
-- 所有真实的 **下单、下单失败、成交、撤单、撤单失败** 事件都会写入表 `trade_records`，主要字段包括：
-  - `event_time`：事件时间戳；
-  - `event_type`：`ORDER` / `ORDER_ERROR` / `TRADE` / `CANCEL` / `CANCEL_ERROR`；
-  - `account_id`：资金账号；
-  - `stock_code`：股票代码（带市场后缀）；
-  - `direction`：`BUY` / `SELL`；
-  - `volume` / `price` / `amount`：数量、价格、成交金额；
-  - `order_id`：委托编号；
-  - `strategy_name` / `remark`：策略名与备注（由策略传入）。
+- 默认生成 `trade_records.db`（可用 `[DB].TRADE_DB_PATH` 修改）。
+- 实盘相关事件会写入表 `trade_records`（下单/成交/撤单及失败等），用于复盘与排障。
 
 你可以使用任意 SQLite 客户端或命令行快速查询，例如：
 
@@ -112,7 +66,7 @@ sqlite3 trade_records.db "SELECT event_time,event_type,stock_code,direction,volu
 
 ## 自定义策略扩展
 
-在 `strategy/` 目录中新建文件并继承 `BaseStrategy`，实现以下核心方法后再到 `main.py` 中按名称注册，并在 `config.ini` 里切换 `STRATEGY.NAME` 即可：
+在 `strategy/` 下新建策略并继承 `BaseStrategy`，实现核心方法后，在 `main.py` 按名称注册；再在 `config.ini` 里切换 `STRATEGY.NAME` 即可：
 
 - `on_init()`：初始化参数 / 资源；
 - `on_prepare()`：盘前选股与缓存准备；
