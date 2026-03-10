@@ -84,38 +84,6 @@ class BaseStrategy(ABC):
             logger.warning("[%s] 行情连接失败: %s", self.name, exc)
             return False
 
-    def ensure_trade_connected_from_config(
-        self,
-        account_section: str = "ACCOUNT",
-        id_key: str = "ACCOUNT_ID",
-        path_key: str = "MINI_QMT_PATH",
-    ) -> bool:
-        """
-        从配置读取账号信息并尝试建立交易连接（未配置则静默跳过）。
-
-        :param account_section: 配置段名
-        :param id_key: 账号 ID 键名
-        :param path_key: 交易端路径键名
-        :return: True 表示已连接或连接成功；False 表示未连接（含未配置/失败）。
-        """
-        from logging_config import logger
-
-        try:
-            if getattr(self.trade, "is_connected", False):
-                return True
-            if not hasattr(self.config, "get"):
-                return False
-            account_id = self.config.get(account_section, id_key, fallback="")
-            userdata = self.config.get(account_section, path_key, fallback="")
-            if not account_id or not userdata:
-                return False
-            if hasattr(self.trade, "connect"):
-                self.trade.connect()
-            return bool(getattr(self.trade, "is_connected", False))
-        except Exception as exc:
-            logger.warning("[%s] 交易连接跳过: %s", self.name, exc)
-            return False
-
     def _log_throttled(self, key: str, level: str, msg: str, *args: Any, interval_sec: int = 30) -> None:
         """
         按 key 节流输出日志，适用于盘中高频循环。
@@ -228,11 +196,7 @@ class BaseStrategy(ABC):
         """
         if not stock_code:
             return False
-        try:
-            from xtquant import xtconstant  # 延迟导入，避免无交易环境时报错
-        except Exception:
-            # 无交易环境下无法判断委托方向，默认不拦截
-            return False
+        from xtquant import xtconstant
 
         for o in self.get_unfinished_orders():
             try:
@@ -256,10 +220,7 @@ class BaseStrategy(ABC):
         from logging_config import logger
         from utils.feishu_notify import send_text as feishu_send_text
 
-        try:
-            from xtquant import xtconstant  # 延迟导入，避免无交易环境时报错
-        except Exception:
-            return False
+        from xtquant import xtconstant
 
         orders = self.get_unfinished_orders()
         if not orders:

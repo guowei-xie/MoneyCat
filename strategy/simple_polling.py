@@ -24,7 +24,6 @@ class SimplePollingStrategy(BaseStrategy):
         """初始化：读配置、连接行情与交易、更新历史数据。"""
         logger.info("[%s] 初始化开始", self.name)
         self.ensure_data_connected()
-        self.ensure_trade_connected_from_config()
         # 示例：为股池下载近期日线（股池在 on_prepare 里设置后再下载也可）
         logger.info("[%s] 初始化完成", self.name)
 

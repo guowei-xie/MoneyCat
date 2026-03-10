@@ -98,7 +98,6 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         """
         logger.info("[%s] 策略初始化开始", self.name)
         self.ensure_data_connected()
-        self.ensure_trade_connected_from_config()
 
         # 使用 akshare 交易日历构建 trade_calendar，供之后选 T-1 日使用
         try:
