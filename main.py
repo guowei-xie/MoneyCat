@@ -11,10 +11,10 @@ import os
 import sys
 from datetime import datetime, timedelta
 
-# 保证项目根在 path 中
-ROOT = os.path.dirname(os.path.abspath(__file__))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+# 保证项目根在 path 中（兼容不同启动 cwd）
+from utils.path import ensure_project_root_on_path
+
+ensure_project_root_on_path(__file__, levels_up=1)
 
 from configparser import ConfigParser
 from logging_config import logger, setup_logger

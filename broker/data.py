@@ -3,26 +3,21 @@
 行情数据模块：从 QMT(xtdata) 获取、读取、简单清洗行情数据。
 """
 from typing import List, Optional, Dict, Any, Tuple
-import sys
-import os
 
 import pandas as pd
 
+from utils.path import ensure_project_root_on_path
+from utils.optional import get_tqdm
+
 # 项目根目录加入 path，保证可引用 xtquant
-_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _root not in sys.path:
-    sys.path.insert(0, _root)
+ensure_project_root_on_path(__file__, levels_up=2)
 
 from xtquant import xtdata
 from logging_config import logger
 from utils.common import add_stock_suffix, add_stock_suffix_list
 from utils.universe import filter_main_board, is_st_name, is_delisting_name
 
-try:
-    from tqdm import tqdm
-except ImportError:
-    def tqdm(iterable, **kwargs):
-        return iterable
+tqdm = get_tqdm()
 
 
 class DataBroker:

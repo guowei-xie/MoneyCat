@@ -2,13 +2,11 @@
 """
 账户模块：读取资金、持仓等信息，基于 xttrader。
 """
-import sys
-import os
 from typing import Optional, List, Dict, Any
 
-_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _root not in sys.path:
-    sys.path.insert(0, _root)
+from utils.path import ensure_project_root_on_path
+
+ensure_project_root_on_path(__file__, levels_up=2)
 
 from logging_config import logger
 from utils.common import add_stock_suffix

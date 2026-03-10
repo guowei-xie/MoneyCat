@@ -4,12 +4,10 @@
 支持委托成功与成交成功时的飞书通知（成交通过 xt 的 on_stock_trade 回调）。
 """
 import random
-import sys
-import os
 
-_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _root not in sys.path:
-    sys.path.insert(0, _root)
+from utils.path import ensure_project_root_on_path
+
+ensure_project_root_on_path(__file__, levels_up=2)
 
 from xtquant.xttrader import XtQuantTrader, XtQuantTraderCallback
 from xtquant.xttype import StockAccount

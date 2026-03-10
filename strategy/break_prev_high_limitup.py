@@ -21,12 +21,9 @@ from utils.market_rules import is_limit, get_limit_price
 from utils.position_sizing import convert_to_safe_sell_volume
 from utils.indicators import get_macd, is_macd_top
 from utils.feishu_notify import send_text as feishu_send_text
+from utils.optional import get_tqdm
 
-try:
-    from tqdm import tqdm
-except ImportError:
-    def tqdm(iterable, **kwargs):
-        return iterable
+tqdm = get_tqdm()
 
 
 class BreakPrevHighLimitUpStrategy(BaseStrategy):

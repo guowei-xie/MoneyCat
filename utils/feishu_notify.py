@@ -98,6 +98,7 @@ def send_text(
         logger.error("飞书返回错误：code=%s msg=%s content=%s", data.get("code"), data.get("msg"), content)
         return False
 
-    logger.info("飞书通知发送成功：%s", json.dumps(payload, ensure_ascii=False))
+    # 成功发送属于高频事件，避免在 INFO 级别刷屏；必要时可将本模块 logger 级别调为 DEBUG。
+    logger.debug("飞书通知发送成功：%s", json.dumps(payload, ensure_ascii=False))
     return True
 
