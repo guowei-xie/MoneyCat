@@ -148,7 +148,9 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
 
         # 2) 获取当前持仓，构建预卖出池
         holding_codes = {p.get("stock_code") for p in self.account.get_positions()} if self.account._connected() else set()
-        self.pre_sell_pool = sorted(code for code in holding_codes if code)
+        raw_pre_sell = sorted(code for code in holding_codes if code)
+        # 仅对“预卖出池（持仓）”做可交易过滤，规避停牌/非股票标的等特殊情况
+        self.pre_sell_pool = self.data.filter_tradeable_stock_codes(raw_pre_sell, tag="pre_sell_pool")
 
         # 预买入池 + 预卖出池 合并为统一缓存池
         cache_pool = sorted(set(self.pre_buy_pool) | set(self.pre_sell_pool))
@@ -184,12 +186,12 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         推送内容包含：
         - 总资金（total_asset）
         - 持仓金额（market_value）
-        - 持仓数量（持仓股票只数）
+        - 预卖数量（预卖池数量，口径与盘前日志一致）
         - 预选数量（预买池数量）
         """
         total_asset = 0.0
         market_value = 0.0
-        holding_count = 0
+        pre_sell_count = len(self.pre_sell_pool)
         preselect_count = len(self.pre_buy_pool)
 
         try:
@@ -197,12 +199,10 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
                 asset = self.account.get_asset() or {}
                 total_asset = float(asset.get("total_asset", 0) or 0)
                 market_value = float(asset.get("market_value", 0) or 0)
-                positions = self.account.get_positions() or []
-                holding_count = sum(1 for p in positions if float(p.get("volume", 0) or 0) > 0)
 
             msg = (
                 f"【提示】盘前准备完成：总资金 {total_asset:.2f} "
-                f"持仓金额{market_value:.2f} 持仓数量{holding_count} 预选数量{preselect_count}"
+                f"持仓金额{market_value:.2f} 持仓数量{pre_sell_count}只 预选数量{preselect_count}只"
             )
             feishu_send_text(msg)
         except Exception as exc:
@@ -862,14 +862,5 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         """
         盘后总结：当前缓存中仍有的分批次数等信息仅做调试打印。
         """
-        logger.info("[%s] 盘后总结：缓存股票数量=%s", self.name, len(self.cached))
-        for code, info_dict in list(self.cached.items())[:20]:
-            logger.debug(
-                "[%s] %s pre_close=%.2f prev_high=%.2f batch_left=%s",
-                self.name,
-                code,
-                float(info_dict.get("pre_close", 0) or 0),
-                float(info_dict.get("prev_high_price", 0) or 0),
-                info_dict.get("batch_sell_count", 0),
-            )
+        pass
 

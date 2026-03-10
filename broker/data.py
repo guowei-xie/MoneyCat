@@ -264,6 +264,121 @@ class DataBroker:
             logger.warning("get_instrument_detail %s: %s", code, e)
             return None
 
+    def get_instrument_type(self, stock_code: str) -> Optional[Dict[str, bool]]:
+        """
+        获取合约类型信息（如 stock/fund/etf/index 等）。
+
+        :param stock_code: 合约代码（可带或不带后缀）
+        :return: 形如 {'stock': True, 'fund': False, ...} 的字典；失败返回 None
+        """
+        code = add_stock_suffix(stock_code)
+        try:
+            info = xtdata.get_instrument_type(code)
+            return info if isinstance(info, dict) else None
+        except Exception as e:
+            logger.warning("get_instrument_type %s: %s", code, e)
+            return None
+
+    def filter_tradeable_stock_codes(self, stock_list: List[str], tag: str = "stock_pool") -> List[str]:
+        """
+        过滤出“可交易的沪深股票标的”列表（用于预卖池等小规模列表）。
+
+        主要规避的特殊情况：
+        - 停牌：InstrumentStatus >= 1 视为停牌
+        - 不可交易：IsTrading 为 False（集合竞价/退市/到期等情况下可能为 False）
+        - 非股票标的：get_instrument_type 返回 stock!=True（如 ETF/基金/指数/期货等）
+        - 非沪深A股：交易所后缀不为 .SH/.SZ（如 .BJ 或其他市场）
+
+        :param stock_list: 股票代码列表（可带或不带后缀）
+        :param tag: 日志标签，便于区分来源（如 'pre_sell_pool'）
+        :return: 过滤后的股票代码列表（带后缀）
+        """
+        codes = add_stock_suffix_list(list(stock_list or []))
+        if not codes:
+            return []
+
+        ok: List[str] = []
+        drop = 0
+        bad_format = 0
+        non_stock = 0
+        suspended = 0
+        not_trading = 0
+        non_a_share = 0
+        no_detail = 0
+        no_type = 0
+
+        for raw in codes:
+            code = str(raw or "").strip()
+            if not code or "." not in code:
+                bad_format += 1
+                drop += 1
+                continue
+
+            # 仅保留沪深标的，避免把北交所/其他市场带进策略（按你当前策略主板池的口径）
+            if not (code.endswith(".SH") or code.endswith(".SZ")):
+                non_a_share += 1
+                drop += 1
+                continue
+
+            detail = self.get_instrument_detail(code, iscomplete=False)
+            if not isinstance(detail, dict) or not detail:
+                no_detail += 1
+                drop += 1
+                continue
+
+            # 是否可交易（xtdata 直接给出）
+            # 注意：部分环境下盘前/非交易时段 IsTrading 可能为 False，直接剔除会误伤预卖池；
+            # 因此仅在交易时段内将 IsTrading==False 作为剔除条件。
+            try:
+                from utils.common import is_trading_time
+                in_session = bool(is_trading_time())
+            except Exception:
+                in_session = False
+            is_trading = detail.get("IsTrading", True)
+            if in_session and is_trading is False:
+                not_trading += 1
+                drop += 1
+                continue
+
+            # 停牌状态：>=1 视为停牌（与当前项目主板池过滤保持一致）
+            instrument_status = detail.get("InstrumentStatus", 0)
+            try:
+                instrument_status_int = int(instrument_status)
+            except Exception:
+                instrument_status_int = 0
+            if instrument_status_int >= 1:
+                suspended += 1
+                drop += 1
+                continue
+
+            inst_type = self.get_instrument_type(code)
+            if not isinstance(inst_type, dict) or not inst_type:
+                no_type += 1
+                drop += 1
+                continue
+            if not bool(inst_type.get("stock", False)):
+                non_stock += 1
+                drop += 1
+                continue
+
+            ok.append(code)
+
+        logger.info(
+            "[%s] 过滤可交易股票：in=%s ok=%s drop=%s bad_format=%s non_stock=%s suspended=%s not_trading=%s non_a_share=%s no_detail=%s no_type=%s",
+            tag,
+            len(codes),
+            len(ok),
+            drop,
+            bad_format,
+            non_stock,
+            suspended,
+            not_trading,
+            non_a_share,
+            no_detail,
+            no_type,
+        )
+        return ok
+
     def get_stock_list_in_sector(self, sector_name: str) -> List[str]:
         """
         获取板块成分股列表。
