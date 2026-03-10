@@ -63,8 +63,8 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         self.pre_sell_pool: List[str] = []       # 预卖出池（当前持仓）
         self.cached: Dict[str, Dict[str, Any]] = {}  # 各股票盘前缓存（昨收、前高、卖出状态等）
 
-        # 资金不足日志节流：记录每只股票上次输出时间戳
-        self._last_insufficient_cash_log: Dict[str, float] = {}
+        # 收盘前是否已执行过一次“撤掉所有未成交订单”
+        self._has_canceled_unfilled_orders_before_close: bool = False
 
         self._load_params_from_config()
 
@@ -335,25 +335,6 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         # 预买入池 + 预卖出池（均为带后缀代码）
         return list(set(self.pre_buy_pool) | set(self.pre_sell_pool))
 
-    def _log_insufficient_cash(self, stock_code: str, price: float) -> None:
-        """
-        资金不足时按单票节流输出提示日志，避免在高频 tick 下刷屏。
-        """
-        now = time.time()
-        last_ts = float(self._last_insufficient_cash_log.get(stock_code, 0.0) or 0.0)
-        # 默认同一只股票 60 秒内只提示一次
-        if now - last_ts < 60:
-            return
-        self._last_insufficient_cash_log[stock_code] = now
-        asset = self.account.get_asset()
-        cash = float((asset or {}).get("cash", 0) or 0)
-        logger.info(
-            "[%s] 资金不足，无法按计划买入 %s 当前价=%.2f 可用资金=%.2f",
-            self.name,
-            stock_code,
-            price,
-            cash,
-        )
 
     def on_tick(self, tick_data: Dict[str, Any]) -> None:
         """
@@ -361,6 +342,16 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         """
         if not tick_data:
             return
+
+        # 收盘前 14:55 撤掉所有未成交委托（仅执行一次）
+        now_hms = time.strftime("%H:%M:%S", time.localtime())
+        if (
+            not self._has_canceled_unfilled_orders_before_close
+            and "14:55:00" <= now_hms <= "14:59:59"
+        ):
+            # 使用基类提供的通用批量撤单能力，仅在收盘前通知一次
+            self.cancel_all_unfilled_orders(notify=True)
+            self._has_canceled_unfilled_orders_before_close = True
 
         # 盘中买入只关注“预买入池”中且当前 tick 涨幅已接近涨停的标的，减少分时 K 请求量；
         # 盘中卖出则默认对预卖出池全部监控。
@@ -534,19 +525,45 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         if current_price <= prev_high:
             return None
 
-        volume = self.calc_buy_volume_by_ratio(price=float(current_price), cash_ratio=float(self.buy_cash_ratio), lot_size=100)
+        volume = self.calc_buy_volume_by_ratio(
+            price=float(current_price),
+            cash_ratio=float(self.buy_cash_ratio),
+            lot_size=100,
+        )
         if volume <= 0:
-            self._log_insufficient_cash(stock_code, current_price)
-            self._log_throttled(
-                f"buy_reject_volume0:{stock_code}",
-                "debug",
-                "[%s] 买入跳过(可买量为0): %s price=%.2f total_asset/cash不足或比例过低",
-                self.name,
-                stock_code,
-                current_price,
-                interval_sec=60,
+            # 首次可买量为 0，尝试撤掉最早未成交买单以释放资金（基类通用能力）
+            released = self.cancel_earliest_unfilled_buy_order()
+            if not released:
+                self.log_insufficient_cash(stock_code, current_price)
+                self._log_throttled(
+                    f"buy_reject_volume0:{stock_code}",
+                    "debug",
+                    "[%s] 买入跳过(可买量为0): %s price=%.2f total_asset/cash不足或比例过低",
+                    self.name,
+                    stock_code,
+                    current_price,
+                    interval_sec=60,
+                )
+                return None
+
+            # 撤单成功后重新计算一次可买量（若资金尚未完全释放，可能仍为 0）
+            volume = self.calc_buy_volume_by_ratio(
+                price=float(current_price),
+                cash_ratio=float(self.buy_cash_ratio),
+                lot_size=100,
             )
-            return None
+            if volume <= 0:
+                self.log_insufficient_cash(stock_code, current_price)
+                self._log_throttled(
+                    f"buy_reject_volume0_after_cancel:{stock_code}",
+                    "debug",
+                    "[%s] 买入跳过(撤单后仍可买量为0): %s price=%.2f total_asset/cash不足或比例过低",
+                    self.name,
+                    stock_code,
+                    current_price,
+                    interval_sec=60,
+                )
+                return None
 
         self._log_throttled(
             f"buy_signal:{stock_code}",

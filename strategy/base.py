@@ -25,6 +25,8 @@ class BaseStrategy(ABC):
         self.name = self.__class__.__name__
         # 日志节流：避免盘中高频循环刷屏（key 建议包含场景与股票代码）
         self._throttle_log_ts: Dict[str, float] = {}
+        # 资金不足日志节流：记录每只股票上次输出时间戳
+        self._last_insufficient_cash_log: Dict[str, float] = {}
 
     def run(self) -> None:
         """完整流程：初始化 → 盘前 → 盘中 → 盘后。"""
@@ -161,6 +163,182 @@ class BaseStrategy(ABC):
             return False
         except Exception:
             return False
+
+    def log_insufficient_cash(self, stock_code: str, price: float) -> None:
+        """
+        资金不足时按单票节流输出提示日志，避免在高频 tick 下刷屏。
+        """
+        import time
+        from logging_config import logger
+
+        now = time.time()
+        last_ts = float(self._last_insufficient_cash_log.get(stock_code, 0.0) or 0.0)
+        # 默认同一只股票 60 秒内只提示一次
+        if now - last_ts < 60:
+            return
+        self._last_insufficient_cash_log[stock_code] = now
+        asset = self.account.get_asset()
+        cash = float((asset or {}).get("cash", 0) or 0)
+        logger.info(
+            "[%s] 资金不足，无法按计划买入 %s 当前价=%.2f 可用资金=%.2f",
+            self.name,
+            stock_code,
+            price,
+            cash,
+        )
+
+    def get_unfinished_orders(self) -> List[Any]:
+        """
+        查询当前未完全成交的委托（买卖均返回），按委托时间升序排序。
+        """
+        from logging_config import logger
+
+        trader = getattr(self.trade, "_trader", None)
+        account = getattr(self.trade, "_account", None)
+        if trader is None or account is None:
+            return []
+        try:
+            orders = trader.query_stock_orders(account) or []
+        except Exception as exc:
+            logger.warning("[%s] 查询委托列表失败: %s", self.name, exc)
+            return []
+
+        unfinished: List[Any] = []
+        for o in orders:
+            try:
+                order_volume = int(getattr(o, "order_volume", 0) or 0)
+                traded_volume = int(getattr(o, "traded_volume", 0) or 0)
+                if order_volume <= 0 or traded_volume >= order_volume:
+                    continue
+                unfinished.append(o)
+            except Exception:
+                continue
+
+        unfinished.sort(key=lambda x: getattr(x, "order_time", 0))
+        return unfinished
+
+    def cancel_earliest_unfilled_buy_order(self) -> bool:
+        """
+        撤掉最新的未完全成交买入委托，用于释放被占用资金。
+        """
+        from logging_config import logger
+        from utils.feishu_notify import send_text as feishu_send_text
+
+        try:
+            from xtquant import xtconstant  # 延迟导入，避免无交易环境时报错
+        except Exception:
+            return False
+
+        orders = self.get_unfinished_orders()
+        if not orders:
+            return False
+
+        # get_unfinished_orders 返回的是按委托时间升序的列表，这里改为选择“最新”的买入单
+        target = None
+        for o in reversed(orders):
+            try:
+                order_type = int(getattr(o, "order_type", 0) or 0)
+                if order_type == xtconstant.STOCK_BUY:
+                    target = o
+                    break
+            except Exception:
+                continue
+
+        if target is None:
+            return False
+
+        order_id = int(getattr(target, "order_id", -1) or -1)
+        stock_code = str(getattr(target, "stock_code", "") or "")
+        stock_name = str(getattr(target, "instrument_name", "") or "")
+        if order_id < 0:
+            return False
+
+        ret = self.trade.cancel(order_id)
+        if ret != 0:
+            logger.warning(
+                "[%s] 撤掉最新未成交买单失败: %s order_id=%s ret=%s",
+                self.name,
+                stock_code,
+                order_id,
+                ret,
+            )
+            return False
+
+        logger.info(
+            "[%s] 已撤掉最新未成交买单: %s order_id=%s",
+            self.name,
+            stock_code,
+            order_id,
+        )
+        try:
+            if stock_name:
+                feishu_send_text(
+                    f"【策略自动撤单】因资金不足，撤掉最新未成交买单 {stock_code}({stock_name}) 委托号 {order_id}"
+                )
+            else:
+                feishu_send_text(
+                    f"【策略自动撤单】因资金不足，撤掉最新未成交买单 {stock_code} 委托号 {order_id}"
+                )
+        except Exception:
+            # 飞书通知失败不影响交易主流程
+            pass
+        return True
+
+    def cancel_all_unfilled_orders(self, notify: bool = True) -> None:
+        """
+        撤掉当前所有未完全成交的委托（买入与卖出均撤），可选飞书通知。
+        """
+        from logging_config import logger
+        from utils.feishu_notify import send_text as feishu_send_text
+
+        orders = self.get_unfinished_orders()
+        if not orders:
+            logger.info("[%s] 当前无未成交委托需要撤单", self.name)
+            return
+
+        logger.info(
+            "[%s] 开始撤掉所有未成交委托，数量=%s",
+            self.name,
+            len(orders),
+        )
+
+        success, fail = 0, 0
+        for o in orders:
+            try:
+                order_id = int(getattr(o, "order_id", -1) or -1)
+                stock_code = str(getattr(o, "stock_code", "") or "")
+                if order_id < 0:
+                    continue
+                ret = self.trade.cancel(order_id)
+                if ret == 0:
+                    success += 1
+                    logger.info(
+                        "[%s] 撤单成功: %s order_id=%s",
+                        self.name,
+                        stock_code,
+                        order_id,
+                    )
+                else:
+                    fail += 1
+                    logger.warning(
+                        "[%s] 撤单失败: %s order_id=%s ret=%s",
+                        self.name,
+                        stock_code,
+                        order_id,
+                        ret,
+                    )
+            except Exception as exc:
+                fail += 1
+                logger.warning("[%s] 撤单异常: %s", self.name, exc)
+
+        if not notify:
+            return
+        try:
+            feishu_send_text(
+                f"【策略自动撤单】批量撤单完成 成功 {success} 笔 失败 {fail} 笔"
+            )
+        except Exception:
+            pass
 
     def calc_buy_volume_by_ratio(self, price: float, cash_ratio: float, lot_size: int = 100) -> int:
         """
