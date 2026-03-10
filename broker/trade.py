@@ -15,34 +15,8 @@ from xtquant import xtconstant
 from logging_config import logger
 from utils.common import add_stock_suffix
 from utils.feishu_notify import send_text as feishu_send_text
+from utils.time_utils import format_hms
 from db.trade_store import get_trade_store
-
-
-def _format_hms(value) -> str:
-    """
-    将成交时间格式化为 HH:MM:SS。
-
-    XtTrade.traded_time 在不同环境可能是 int/str（如 20260310103059、103059、"10:30:59"），
-    这里统一提取最后 6 位数字作为时分秒。
-    """
-    if value is None:
-        return "-"
-    s = str(value).strip()
-    if not s:
-        return "-"
-    # 已是标准格式
-    if len(s) >= 8 and s.count(":") >= 2:
-        # 可能包含日期等前缀，取最后一个 HH:MM:SS
-        parts = s.split()
-        for p in reversed(parts):
-            if p.count(":") >= 2 and len(p) >= 8:
-                return p[-8:]
-        return s[-8:]
-    digits = "".join(ch for ch in s if ch.isdigit())
-    if len(digits) < 6:
-        return s
-    hms = digits[-6:]
-    return f"{hms[0:2]}:{hms[2:4]}:{hms[4:6]}"
 
 
 def _trade_callback_notify(trade) -> None:
@@ -57,7 +31,7 @@ def _trade_callback_notify(trade) -> None:
         vol = getattr(trade, "traded_volume", 0) or 0
         price = getattr(trade, "traded_price", 0) or 0
         amount = getattr(trade, "traded_amount", 0) or 0
-        traded_time = _format_hms(getattr(trade, "traded_time", "") or "")
+        traded_time = format_hms(getattr(trade, "traded_time", "") or "") or "-"
         order_id = getattr(trade, "order_id", "") or ""
         remark = getattr(trade, "order_remark", "") or ""
         name = getattr(trade, "instrument_name", "") or ""

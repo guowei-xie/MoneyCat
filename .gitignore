@@ -53,3 +53,11 @@ Thumbs.db
 
 # 本地 SQLite 交易记录数据库
 trade_records.db
+trade_records.db-wal
+trade_records.db-shm
+trade_records.db-journal
+
+# 通用 SQLite 临时文件（WAL/SHM/JOURNAL）
+*.db-wal
+*.db-shm
+*.db-journal

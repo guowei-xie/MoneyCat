@@ -7,8 +7,12 @@ import time
 from datetime import datetime
 from typing import List, Optional, Set
 
+from logging_config import logger
+from utils.feishu_notify import send_text as feishu_send_text
+
 # 缓存 akshare 返回的交易日集合（YYYYMMDD），避免重复请求
 _akshare_trade_dates: Optional[Set[str]] = None
+_trading_day_degraded_notified: bool = False
 
 
 def _get_trading_dates_akshare() -> Set[str]:
@@ -78,8 +82,21 @@ def is_trading_day(date_str: Optional[str] = None) -> bool:
     trade_dates = _get_trading_dates_akshare()
     if trade_dates:
         return dt_str in trade_dates
-    # 降级：仅排除周末
+    # 降级：仅排除周末，并输出明显告警与飞书提醒
     try:
+        global _trading_day_degraded_notified
+        if not _trading_day_degraded_notified:
+            _trading_day_degraded_notified = True
+            logger.warning(
+                "is_trading_day 使用降级模式：akshare 交易日历不可用，仅按周末判断交易日。"
+            )
+            try:
+                feishu_send_text(
+                    "【警告】交易日判断进入降级模式：akshare 交易日历不可用，当前仅按周末判断是否为交易日，请尽快人工核查。"
+                )
+            except Exception:
+                # 飞书通知失败不影响主流程
+                pass
         t = datetime.strptime(dt_str, "%Y%m%d")
         return t.weekday() < 5
     except Exception:

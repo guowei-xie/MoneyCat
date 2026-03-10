@@ -22,7 +22,7 @@ from utils.position_sizing import convert_to_safe_sell_volume
 from utils.indicators import get_macd, is_macd_top
 from utils.feishu_notify import send_text as feishu_send_text
 from utils.optional import get_tqdm
-from db.trade_store import get_trade_store
+from utils.time_utils import get_last_bar_hms
 
 tqdm = get_tqdm()
 
@@ -478,12 +478,27 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
 
         if bars is None or bars.empty or stock_code not in self.cached:
             return None
-        # 分时根数限制：第 90 根大致对应 11:00
-        if len(bars) > self.buy_max_bars:
+
+        # 精确时间窗：仅在 09:30~11:00 内产生买入信号
+        last_hms = get_last_bar_hms(bars)
+        if last_hms is not None and (last_hms < "09:30:00" or last_hms > "11:00:00"):
             self._log_throttled(
                 f"buy_reject_timewin:{stock_code}",
                 "debug",
-                "[%s] 买入跳过(超出时间窗): %s minute_k=%s max=%s",
+                "[%s] 买入跳过(超出时间窗): %s time=%s",
+                self.name,
+                stock_code,
+                last_hms,
+                interval_sec=60,
+            )
+            return None
+
+        # 仍保留分时根数的上限保护，避免异常数据导致过长历史窗口
+        if len(bars) > self.buy_max_bars:
+            self._log_throttled(
+                f"buy_reject_timewin_k:{stock_code}",
+                "debug",
+                "[%s] 买入跳过(分时根数超限): %s minute_k=%s max=%s",
                 self.name,
                 stock_code,
                 len(bars),
@@ -819,6 +834,22 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         3) 否则按分时 MACD 首个顶 / 顶背离分批卖出。
         """
         if bars is None or bars.empty or stock_code not in self.cached:
+            return None
+
+        # 卖出信号时间窗控制：仅在 09:30~14:55 内产生新的卖出信号
+        last_hms = get_last_bar_hms(bars)
+        if last_hms is not None and (
+            last_hms < "09:30:00" or last_hms > "14:55:00"
+        ):
+            self._log_throttled(
+                f"sell_reject_timewin:{stock_code}",
+                "debug",
+                "[%s] 卖出跳过(超出时间窗): %s time=%s",
+                self.name,
+                stock_code,
+                last_hms,
+                interval_sec=60,
+            )
             return None
 
         available_volume = int(self.account.get_available_volume(stock_code))

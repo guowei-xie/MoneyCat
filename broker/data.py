@@ -270,12 +270,12 @@ class DataBroker:
             return
 
         if only_if_trading_time:
-            try:
-                from utils.common import is_trading_time
-                if not is_trading_time():
-                    return
-            except Exception:
-                # 无法判断时段时选择保守不执行，避免盘前无谓下载
+            import time as _time
+
+            # 仅在 09:30~15:00 时段内进行当日分时回补（不中断午休时段），
+            # 以覆盖盘中重启但当前处于休市时间的场景。
+            now_hms = _time.strftime("%H:%M:%S", _time.localtime())
+            if now_hms < "09:30:00" or now_hms > "15:00:00":
                 return
 
         from utils.common import current_date_str
