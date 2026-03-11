@@ -23,6 +23,7 @@ from utils.indicators import get_macd, is_macd_top
 from utils.feishu_notify import send_text as feishu_send_text
 from utils.optional import get_tqdm
 from utils.time_utils import get_last_bar_hms
+from db.trade_store import get_trade_store
 
 tqdm = get_tqdm()
 
@@ -55,7 +56,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         self.limit_count_check_days = 250
         self.min_limit_count = 1
         self.buy_cash_ratio = 0.1  # 每次买入最多使用可用资金比例
-        self.buy_end_hms = "11:00:00"  # 买入信号截止时间（含），格式 HH:MM:SS
+        self.buy_end_hms = "14:30:00"  # 买入信号截止时间（含），格式 HH:MM:SS
 
         # ↓ 运行时缓存
         self.trade_calendar: List[str] = []
@@ -526,6 +527,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         if len(bars) > 1:
             high_before = float(bars.iloc[:-1]["high"].max())
             if high_before >= limit_threshold:
+                self._buy_skip_cache[stock_code] = "hit_before"
                 self._log_throttled(
                     f"buy_reject_hit_before:{stock_code}",
                     "debug",
@@ -543,6 +545,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             return None
         # 2) 当日最低价或昨收是否曾低于前高
         if intraday_low >= prev_high and pre_close >= prev_high:
+            self._buy_skip_cache[stock_code] = "no_pullback"
             self._log_throttled(
                 f"buy_reject_no_pullback:{stock_code}",
                 "debug",
@@ -967,6 +970,22 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             pnl_pct = pnl / self._start_total_asset
             pnl_pct_str = f"{pnl_pct:.2%}"
 
+        # 统计“当日新建仓数量”：使用本地 SQLite 成交记录 TRADE + BUY 去重股票代码
+        new_position_count = 0
+        try:
+            store = get_trade_store()
+            if store is not None:
+                new_position_count = int(
+                    store.get_daily_new_position_count(
+                        date_yyyymmdd=current_date_str(),
+                        strategy_name=self.name,
+                    )
+                    or 0
+                )
+        except Exception as exc:
+            logger.warning("[%s] 读取当日新建仓数量失败，将按 0 处理: %s", self.name, exc)
+            new_position_count = 0
+
         account_id = ""
         try:
             account_id = str(getattr(self.trade, "account_id", "") or "")
@@ -986,6 +1005,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             f"- 当日盈亏：{pnl:.2f}（{pnl_pct_str}）\n"
             "\n"
             "交易统计：\n"
+            f"- 新建仓：{new_position_count}只\n"
             f"- 买入信号：{self._buy_signal_count}  卖出信号：{self._sell_signal_count}\n"
             f"- 买入委托：{self._buy_order_count}  卖出委托：{self._sell_order_count}\n"
             "\n"

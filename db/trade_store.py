@@ -291,6 +291,44 @@ class SqliteTradeStore:
             "recent_trades": recent,
         }
 
+    def get_daily_new_position_count(
+        self,
+        *,
+        date_yyyymmdd: str,
+        strategy_name: str = "",
+    ) -> int:
+        """
+        统计指定日期的“当日新建仓数量”（按成交 TRADE + BUY，去重股票代码）。
+
+        说明：
+        - 使用 trade_records 表中的成交记录（event_type='TRADE'），方向为 BUY；
+        - 对 stock_code 做 DISTINCT 去重，得到“当日新开仓的股票只数”；
+        - 可选按 strategy_name 过滤（与 get_daily_summary 同口径：允许空策略名记录）。
+
+        :param date_yyyymmdd: 日期字符串，如 '20260310'
+        :param strategy_name: 可选，按策略名过滤
+        :return: 去重后的股票数量（>=0）
+        """
+        date_yyyymmdd = str(date_yyyymmdd or "").strip()
+        if len(date_yyyymmdd) != 8 or not date_yyyymmdd.isdigit():
+            return 0
+        date_prefix = f"{date_yyyymmdd[0:4]}-{date_yyyymmdd[4:6]}-{date_yyyymmdd[6:8]}"
+
+        where = "event_time LIKE ? AND event_type='TRADE' AND direction='BUY' AND stock_code!=''"
+        params: List[Any] = [f"{date_prefix}%"]
+        if strategy_name:
+            where += " AND (strategy_name = ? OR strategy_name = '')"
+            params.append(strategy_name)
+
+        sql = f"SELECT COUNT(DISTINCT stock_code) AS cnt FROM trade_records WHERE {where}"
+        try:
+            with _DB_LOCK:
+                row = self._conn.execute(sql, params).fetchone()
+            return int((row["cnt"] if row is not None else 0) or 0)
+        except Exception as e:
+            logger.warning("读取 SQLite 当日新建仓数量失败: %s", e)
+            return 0
+
 
 def init_trade_store(db_path: str) -> None:
     """根据给定路径初始化全局交易记录存储。"""
