@@ -54,8 +54,8 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         self.interval_max_amplitude_pct = 0.20
         self.limit_count_check_days = 250
         self.min_limit_count = 1
-        self.buy_max_bars = 90  # 分时根数，约 9:30~11:00
         self.buy_cash_ratio = 0.1  # 每次买入最多使用可用资金比例
+        self.buy_end_hms = "11:00:00"  # 买入信号截止时间（含），格式 HH:MM:SS
 
         # ↓ 运行时缓存
         self.trade_calendar: List[str] = []
@@ -98,8 +98,8 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
                 sec, "LIMIT_COUNT_CHECK_DAYS", fallback=self.limit_count_check_days
             )
             self.min_limit_count = self.config.getint(sec, "MIN_LIMIT_COUNT", fallback=self.min_limit_count)
-            self.buy_max_bars = self.config.getint(sec, "BUY_MAX_BARS", fallback=self.buy_max_bars)
             self.buy_cash_ratio = self.config.getfloat(sec, "BUY_CASH_RATIO", fallback=self.buy_cash_ratio)
+            self.buy_end_hms = str(self.config.get(sec, "BUY_END_HMS", fallback=self.buy_end_hms) or self.buy_end_hms)
         except Exception as e:
             logger.warning("[%s] 读取 STRATEGY 配置失败: %s", self.name, e)
 
@@ -195,6 +195,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             len(self.pre_buy_pool),
             len(self.pre_sell_pool),
         )
+        logger.info("[%s] 正在等待开盘/信号...", self.name)
         self._notify_prepare_account_summary()
 
     def _notify_prepare_account_summary(self) -> None:
@@ -375,8 +376,9 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             self.cancel_all_unfilled_orders(notify=True)
             self._has_canceled_unfilled_orders_before_close = True
 
-        # 买入时段：仅 09:30~11:00 内才收集买候选、拉分时、做买入信号判断
-        in_buy_window = "09:30:00" <= now_hms <= "11:00:00"
+        buy_end_hms = self.buy_end_hms if isinstance(self.buy_end_hms, str) and len(self.buy_end_hms) == 8 else "11:00:00"
+        # 买入时段：仅 09:30~buy_end_hms 内才收集买候选、拉分时、做买入信号判断
+        in_buy_window = "09:30:00" <= now_hms <= buy_end_hms
 
         # 盘中买入只关注“预买入池”中且当前 tick 涨幅已接近涨停的标的，减少分时 K 请求量；
         # 盘中卖出则默认对预卖出池全部监控。
@@ -434,7 +436,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             interval_sec=20,
         )
 
-        # 获取当日所有 1 分钟分时 K 线（买入逻辑内部仍会通过 buy_max_bars 限制时间窗）
+        # 获取当日所有 1 分钟分时 K 线
         minute_bars = self.data.get_kline_bars(
             kline_codes,
             period="1m",
@@ -490,20 +492,6 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
                 "[%s] 买入跳过(已持仓): %s",
                 self.name,
                 stock_code,
-                interval_sec=60,
-            )
-            return None
-
-        # 仍保留分时根数的上限保护，避免异常数据导致过长历史窗口
-        if len(bars) > self.buy_max_bars:
-            self._log_throttled(
-                f"buy_reject_timewin_k:{stock_code}",
-                "debug",
-                "[%s] 买入跳过(分时根数超限): %s minute_k=%s max=%s",
-                self.name,
-                stock_code,
-                len(bars),
-                self.buy_max_bars,
                 interval_sec=60,
             )
             return None
