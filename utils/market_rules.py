@@ -6,6 +6,7 @@
 from typing import Optional
 
 from utils.common import add_stock_suffix
+from xtquant import xtdata
 
 
 def get_limit_percentage(stock_code: str) -> float:
@@ -54,6 +55,30 @@ def is_limit(
     return False
 
 
+def _get_limit_price_by_api(stock_code: str, limit_type: str = "up") -> Optional[float]:
+    """
+    使用官方接口获取当日涨跌停价，失败时返回 None。
+
+    :param stock_code: 股票代码，可带或不带后缀
+    :param limit_type: 'up' 涨停 / 'down' 跌停
+    :return: 接口返回的涨跌停价；获取失败时为 None
+    """
+    try:
+        symbol = add_stock_suffix(stock_code)
+        detail = xtdata.get_instrument_detail(symbol)
+        if not detail:
+            return None
+        if limit_type == "up":
+            price = detail.get("UpStopPrice")
+        else:
+            price = detail.get("DownStopPrice")
+        if price is None:
+            return None
+        return float(price)
+    except Exception:
+        return None
+
+
 def get_limit_price(
     stock_code: str,
     previous_close: float,
@@ -61,15 +86,21 @@ def get_limit_price(
     tolerance: float = 0.002,
 ) -> Optional[float]:
     """
-    计算当日理论涨跌停价（用于炸板判断等）。
+    获取当日涨跌停价，优先使用官方接口，失败时回退到本地计算。
 
     :param stock_code: 股票代码
-    :param previous_close: 前收盘价
+    :param previous_close: 前收盘价（用于本地计算回退）
     :param limit_type: 'up' 涨停 / 'down' 跌停
-    :param tolerance: 再减去/加上的误差
+    :param tolerance: 回退计算时的误差修正
+    :return: 涨跌停价；若前收盘价非法且接口失败，则为 None
     """
+    api_price = _get_limit_price_by_api(stock_code, limit_type=limit_type)
+    if api_price is not None:
+        return round(api_price, 2)
+
     if previous_close <= 0:
         return None
+
     pct = get_limit_percentage(stock_code)
     if limit_type == "up":
         return round(previous_close * (1 + pct) - tolerance, 2)

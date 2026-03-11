@@ -620,12 +620,16 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
                 )
                 return None
 
+        limit_up_price = get_limit_price(stock_code, pre_close, "up")
+        order_price = float(limit_up_price) if limit_up_price is not None else current_price
+
         self._log_throttled(
             f"buy_signal:{stock_code}",
             "debug",
-            "[%s] 买入信号: %s price=%.2f low=%.2f prev_high=%.2f pre_close=%.2f threshold=%.2f vol=%s k=%s",
+            "[%s] 买入信号: %s order_price=%.2f last_price=%.2f low=%.2f prev_high=%.2f pre_close=%.2f threshold=%.2f vol=%s k=%s",
             self.name,
             stock_code,
+            order_price,
             current_price,
             intraday_low,
             prev_high,
@@ -640,7 +644,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         return {
             "action": "buy",
             "stock_code": stock_code,
-            "price": current_price,
+            "price": order_price,
             "volume": volume,
             "minute_k_count": len(bars),
             "time": bars.index[-1],
