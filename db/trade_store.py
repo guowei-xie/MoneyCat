@@ -88,7 +88,7 @@ class SqliteTradeStore:
             event_time, event_type, account_id, stock_code, direction,
             volume, price, amount, order_id, strategy_name, remark,
             error_msg, raw_text
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         params = [
             self._now(),
@@ -110,7 +110,14 @@ class SqliteTradeStore:
                 self._conn.execute(sql, params)
                 self._conn.commit()
         except Exception as e:
-            logger.warning("写入 SQLite 交易记录失败: %s", e)
+            logger.warning(
+                "写入 SQLite 交易记录失败: %s (event_type=%s order_id=%s stock_code=%s params_len=%d)",
+                e,
+                event_type,
+                str(order_id) if order_id is not None else "",
+                stock_code or "",
+                len(params),
+            )
 
     def log_order(
         self,
