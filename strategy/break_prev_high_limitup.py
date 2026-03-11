@@ -375,6 +375,9 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             self.cancel_all_unfilled_orders(notify=True)
             self._has_canceled_unfilled_orders_before_close = True
 
+        # 买入时段：仅 09:30~11:00 内才收集买候选、拉分时、做买入信号判断
+        in_buy_window = "09:30:00" <= now_hms <= "11:00:00"
+
         # 盘中买入只关注“预买入池”中且当前 tick 涨幅已接近涨停的标的，减少分时 K 请求量；
         # 盘中卖出则默认对预卖出池全部监控。
         tick_count = len(tick_data)
@@ -382,34 +385,35 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         skip_cache = self._buy_skip_cache
 
         buy_candidates: List[str] = []
-        for code, tick in tick_data.items():
-            if code not in pre_buy_set:
-                continue
-            if code in skip_cache:
-                continue
-            last_price = float((tick or {}).get("lastPrice") or 0)
-            cached = self.cached.get(code) or {}
-            pre_close = float(cached.get("pre_close", 0) or 0)
-            prev_high = float(cached.get("prev_high_price", 0) or 0)
-            if last_price <= 0 or pre_close <= 0 or prev_high <= 0:
-                continue
-            # 仅当 tick 涨幅已接近涨停，且当前价已大于前高时，才拉取分时 K 做进一步信号判断
-            if last_price / pre_close >= (1 + self.limit_near_pct) and last_price > prev_high:
-                buy_candidates.append(code)
-                self._log_throttled(
-                    f"buy_candidate:{code}",
-                    "debug",
-                    "[%s] 盘中候选: %s last=%.2f pre_close=%.2f涨幅=%.4f prev_high=%.2f",
-                    self.name,
-                    code,
-                    last_price,
-                    pre_close,
-                    (last_price / pre_close - 1) if pre_close > 0 else 0.0,
-                    prev_high,
-                    interval_sec=15,
-                )
+        if in_buy_window:
+            for code, tick in tick_data.items():
+                if code not in pre_buy_set:
+                    continue
+                if code in skip_cache:
+                    continue
+                last_price = float((tick or {}).get("lastPrice") or 0)
+                cached = self.cached.get(code) or {}
+                pre_close = float(cached.get("pre_close", 0) or 0)
+                prev_high = float(cached.get("prev_high_price", 0) or 0)
+                if last_price <= 0 or pre_close <= 0 or prev_high <= 0:
+                    continue
+                # 仅当 tick 涨幅已接近涨停，且当前价已大于前高时，才拉取分时 K 做进一步信号判断
+                if last_price / pre_close >= (1 + self.limit_near_pct) and last_price > prev_high:
+                    buy_candidates.append(code)
+                    self._log_throttled(
+                        f"buy_candidate:{code}",
+                        "debug",
+                        "[%s] 盘中候选: %s last=%.2f pre_close=%.2f涨幅=%.4f prev_high=%.2f",
+                        self.name,
+                        code,
+                        last_price,
+                        pre_close,
+                        (last_price / pre_close - 1) if pre_close > 0 else 0.0,
+                        prev_high,
+                        interval_sec=15,
+                    )
 
-        # 卖出池默认全部监控，无需根据 tick_data 再做筛选
+        # 卖出池默认全部监控
         sell_candidates = list(self.pre_sell_pool)
 
         kline_codes = sorted(set(buy_candidates) | set(sell_candidates))
@@ -456,26 +460,13 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
 
     def buy_signal(self, stock_code: str, bars: Optional[pd.DataFrame]) -> Optional[Dict[str, Any]]:
         """
-        买入信号：接近涨停 + 低于前高回踩 + 当前价突破前高，且只在 9:30~11:00 时间窗内生效。
+        买入信号：接近涨停 + 低于前高回踩 + 当前价突破前高。
+        调用方（on_tick）保证仅在 09:30~11:00 时段内调用本方法。
         """
         if stock_code in self._buy_skip_cache:
             return None
 
         if bars is None or bars.empty or stock_code not in self.cached:
-            return None
-
-        # 精确时间窗：仅在 09:30~11:00 内产生买入信号
-        last_hms = get_last_bar_hms(bars)
-        if last_hms is not None and (last_hms < "09:30:00" or last_hms > "11:00:00"):
-            self._log_throttled(
-                f"buy_reject_timewin:{stock_code}",
-                "debug",
-                "[%s] 买入跳过(超出时间窗): %s time=%s",
-                self.name,
-                stock_code,
-                last_hms,
-                interval_sec=60,
-            )
             return None
 
         # 若该标的已有未完全成交买单，直接跳过，避免高频 tick 下重复发送买入委托
