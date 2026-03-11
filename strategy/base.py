@@ -118,6 +118,69 @@ class BaseStrategy(ABC):
         except Exception:
             return {}
 
+    def get_position_market_value(self) -> float:
+        """
+        获取当前持仓总市值（失败时返回 0）。
+
+        口径说明：
+        - 使用 AccountBroker.get_positions() 返回的 market_value 字段做求和；
+        - 若某些环境下 market_value 缺失，则回退用 avg_price * volume 粗略估算；
+        - 仅统计 volume > 0 的持仓。
+        """
+        try:
+            positions = self.account.get_positions() or []
+        except Exception:
+            return 0.0
+
+        total = 0.0
+        for p in positions:
+            try:
+                volume = float(p.get("volume", 0) or 0)
+                if volume <= 0:
+                    continue
+                mv = p.get("market_value", None)
+                if mv is None:
+                    avg_price = float(p.get("avg_price", 0) or 0)
+                    mv = avg_price * volume
+                total += float(mv or 0)
+            except Exception:
+                continue
+        return max(float(total), 0.0)
+
+    def get_position_value_limit(self) -> float:
+        """
+        从配置读取“持仓金额上限”（0 表示不启用）。
+
+        配置位置：config.ini -> [RISK] POSITION_VALUE_LIMIT
+        """
+        try:
+            if self.config is None:
+                return 0.0
+            # ConfigParser / dict 两种形态都兼容
+            if hasattr(self.config, "get"):
+                try:
+                    raw = self.config.get("RISK", "POSITION_VALUE_LIMIT", fallback="0")
+                except TypeError:
+                    # dict.get(key, default) 的签名不同
+                    raw = "0"
+            else:
+                raw = "0"
+            val = float(str(raw or "0").strip())
+            return max(val, 0.0)
+        except Exception:
+            return 0.0
+
+    def should_block_buy_by_position_limit(self) -> bool:
+        """
+        判断是否应因“持仓金额上限”拦截新的买入委托。
+
+        :return: True 表示应拦截买入；False 表示不拦截
+        """
+        limit = self.get_position_value_limit()
+        if limit <= 0:
+            return False
+        return self.get_position_market_value() > limit
+
     def has_position(self, stock_code: str) -> bool:
         """
         判断是否持有指定股票（任意可见数量即视为有持仓）。
@@ -365,6 +428,23 @@ class BaseStrategy(ABC):
         from logging_config import logger
 
         if volume <= 0 or price <= 0:
+            return None
+        if self.should_block_buy_by_position_limit():
+            limit = self.get_position_value_limit()
+            mv = self.get_position_market_value()
+            self._log_throttled(
+                "risk.position_value_limit.block_buy",
+                "warning",
+                "[%s] 风控拦截买入：当前持仓市值=%.2f 已超过上限=%.2f，跳过下单 stock=%s 价=%.2f 量=%s remark=%s",
+                self.name,
+                float(mv),
+                float(limit),
+                str(stock_code),
+                float(price),
+                int(volume),
+                str(remark or ""),
+                interval_sec=30,
+            )
             return None
         try:
             order_id = self.trade.buy(stock_code, int(volume), float(price), strategy_name=self.name, order_remark=remark)
