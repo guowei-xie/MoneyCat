@@ -1005,12 +1005,16 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             f"- 当日盈亏：{pnl:.2f}（{pnl_pct_str}）\n"
             "\n"
             "交易统计：\n"
-            f"- 新建仓：{new_position_count}只\n"
-            f"- 买入信号：{self._buy_signal_count}  卖出信号：{self._sell_signal_count}\n"
-            f"- 买入委托：{self._buy_order_count}  卖出委托：{self._sell_order_count}\n"
+            f"- 新建仓：{new_position_count} 只\n"
+            f"- 买入信号：{self._buy_signal_count}\n"
+            f"- 卖出信号：{self._sell_signal_count}\n"
+            f"- 买入委托：{self._buy_order_count}\n"
+            f"- 卖出委托：{self._sell_order_count}\n"
             "\n"
             "股票池概览：\n"
-            f"- 预选股票数：{len(self.pre_buy_pool)}  预卖股票数：{len(self.pre_sell_pool)}  当前持仓数：{hold_count}\n"
+            f"- 预选股票：{len(self.pre_buy_pool)}\n"
+            f"- 预卖股票：{len(self.pre_sell_pool)}\n"
+            f"- 当前持仓：{hold_count}\n"
         )
 
         logger.info("[%s] 当日策略执行摘要：\n%s", self.name, msg.replace("\n", " | "))
