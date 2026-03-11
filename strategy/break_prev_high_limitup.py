@@ -63,6 +63,8 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         self.pre_buy_pool: List[str] = []        # 预买入池（盘前预选股）
         self.pre_sell_pool: List[str] = []       # 预卖出池（当前持仓）
         self.cached: Dict[str, Dict[str, Any]] = {}  # 各股票盘前缓存（昨收、前高、卖出状态等）
+        # 买入信号跳过缓存：命中“开盘过高/已持仓”后，当日不再做买入信号判断，直接从候选池过滤
+        self._buy_skip_cache: Dict[str, str] = {}
 
         # 收盘前是否已执行过一次“撤掉所有未成交订单”
         self._has_canceled_unfilled_orders_before_close: bool = False
@@ -159,6 +161,9 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         raw_pre_sell = sorted(code for code in holding_codes if code)
         # 仅对“预卖出池（持仓）”做可交易过滤，规避停牌/非股票标的等特殊情况
         self.pre_sell_pool = self.data.filter_tradeable_stock_codes(raw_pre_sell, tag="pre_sell_pool")
+        # 已持仓标的：当日不再做买入信号判断，直接加入跳过缓存
+        for code in self.pre_sell_pool:
+            self._buy_skip_cache[code] = "has_position"
 
         # 预买入池 + 预卖出池 合并为统一缓存池
         cache_pool = sorted(set(self.pre_buy_pool) | set(self.pre_sell_pool))
@@ -372,16 +377,17 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
 
         # 盘中买入只关注“预买入池”中且当前 tick 涨幅已接近涨停的标的，减少分时 K 请求量；
         # 盘中卖出则默认对预卖出池全部监控。
-        watch_codes = list(tick_data.keys())
-
+        tick_count = len(tick_data)
         pre_buy_set = set(self.pre_buy_pool)
+        skip_cache = self._buy_skip_cache
 
         buy_candidates: List[str] = []
-        for code in watch_codes:
+        for code, tick in tick_data.items():
             if code not in pre_buy_set:
                 continue
-            tick = tick_data.get(code) or {}
-            last_price = float(tick.get("lastPrice") or 0)
+            if code in skip_cache:
+                continue
+            last_price = float((tick or {}).get("lastPrice") or 0)
             cached = self.cached.get(code) or {}
             pre_close = float(cached.get("pre_close", 0) or 0)
             prev_high = float(cached.get("prev_high_price", 0) or 0)
@@ -415,7 +421,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             "debug",
             "[%s] 盘中轮询: tick=%s 预买池=%s 预卖池=%s 买候选=%s 卖监控=%s 拉取1mK=%s",
             self.name,
-            len(watch_codes),
+            tick_count,
             len(self.pre_buy_pool),
             len(self.pre_sell_pool),
             len(buy_candidates),
@@ -452,28 +458,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         """
         买入信号：接近涨停 + 低于前高回踩 + 当前价突破前高，且只在 9:30~11:00 时间窗内生效。
         """
-        # 若该标的已有未完全成交买单，直接跳过，避免高频 tick 下重复发送买入委托
-        if self.has_unfinished_buy_order(stock_code):
-            self._log_throttled(
-                f"buy_reject_pending_order:{stock_code}",
-                "debug",
-                "[%s] 买入跳过(已有未成交买单): %s",
-                self.name,
-                stock_code,
-                interval_sec=30,
-            )
-            return None
-
-        # 若已经有持仓，则本策略不再加仓，与回测版行为保持一致
-        if self.has_position(stock_code):
-            self._log_throttled(
-                f"buy_reject_has_pos:{stock_code}",
-                "debug",
-                "[%s] 买入跳过(已持仓): %s",
-                self.name,
-                stock_code,
-                interval_sec=60,
-            )
+        if stock_code in self._buy_skip_cache:
             return None
 
         if bars is None or bars.empty or stock_code not in self.cached:
@@ -489,6 +474,31 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
                 self.name,
                 stock_code,
                 last_hms,
+                interval_sec=60,
+            )
+            return None
+
+        # 若该标的已有未完全成交买单，直接跳过，避免高频 tick 下重复发送买入委托
+        if self.has_unfinished_buy_order(stock_code):
+            self._log_throttled(
+                f"buy_reject_pending_order:{stock_code}",
+                "debug",
+                "[%s] 买入跳过(已有未成交买单): %s",
+                self.name,
+                stock_code,
+                interval_sec=30,
+            )
+            return None
+
+        # 若已经有持仓，则本策略不再加仓，与回测版行为保持一致
+        if self.has_position(stock_code):
+            self._buy_skip_cache[stock_code] = "has_position"
+            self._log_throttled(
+                f"buy_reject_has_pos:{stock_code}",
+                "debug",
+                "[%s] 买入跳过(已持仓): %s",
+                self.name,
+                stock_code,
                 interval_sec=60,
             )
             return None
@@ -519,6 +529,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         # 开盘价涨幅不能大于 limit_near_pct
         day_open = float(bars.iloc[0]["open"])
         if day_open > limit_threshold:
+            self._buy_skip_cache[stock_code] = "open_too_high"
             self._log_throttled(
                 f"buy_reject_open_high:{stock_code}",
                 "debug",
