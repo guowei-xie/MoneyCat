@@ -299,49 +299,61 @@ class SqliteTradeStore:
             "recent_trades": recent,
         }
 
-    def get_daily_new_position_count(
+    def get_daily_distinct_stock_counts_by_direction(
         self,
         *,
         date_yyyymmdd: str,
         strategy_name: str = "",
-    ) -> int:
+    ) -> Dict[str, int]:
         """
-        统计指定日期的“当日新建仓数量”（按成交 TRADE + BUY，去重股票代码）。
+        统计指定日期的“买入/卖出股票数量”（按成交 TRADE 的方向对 stock_code 去重计数）。
 
         说明：
-        - 使用 trade_records 表中的成交记录（event_type='TRADE'），方向为 BUY；
-        - 对 stock_code 做 DISTINCT 去重，得到“当日新开仓的股票只数”；
+        - 使用 trade_records 表中的成交记录（event_type='TRADE'）；
+        - 方向优先使用成交记录 t.direction；若为空或异常，则用同 order_id 的下单记录 o.direction 兜底；
+        - 对 stock_code 做 DISTINCT 去重，得到“当日买入/卖出涉及的股票只数”；
         - 可选按 strategy_name 过滤（与 get_daily_summary 同口径：允许空策略名记录）。
 
         :param date_yyyymmdd: 日期字符串，如 '20260310'
         :param strategy_name: 可选，按策略名过滤
-        :return: 去重后的股票数量（>=0）
+        :return: dict，如 {"BUY": 3, "SELL": 2}（方向缺失则忽略）
         """
         date_yyyymmdd = str(date_yyyymmdd or "").strip()
         if len(date_yyyymmdd) != 8 or not date_yyyymmdd.isdigit():
-            return 0
+            return {"BUY": 0, "SELL": 0}
         date_prefix = f"{date_yyyymmdd[0:4]}-{date_yyyymmdd[4:6]}-{date_yyyymmdd[6:8]}"
 
-        # 优先用成交方向判断；若历史版本误写了 TRADE.direction，则用同 order_id 的下单方向兜底纠正。
-        where = "t.event_time LIKE ? AND t.event_type='TRADE' AND t.stock_code!='' AND (t.direction='BUY' OR o.direction='BUY')"
+        # 排除逆回购（1318xx/1319xx 深市、204xxx 沪市）
+        where = (
+            "event_time LIKE ? AND event_type='TRADE' AND stock_code!='' "
+            "AND stock_code NOT LIKE '1318%' AND stock_code NOT LIKE '1319%' AND stock_code NOT LIKE '204%'"
+        )
         params: List[Any] = [f"{date_prefix}%"]
         if strategy_name:
-            where += " AND (t.strategy_name = ? OR t.strategy_name = '')"
-            params.append(strategy_name)
+            # xtquant 可能将 strategy_name 截断（如 BreakPrevHighLimitUpStrategy -> BreakPrevHighLimitUpStr）
+            # 兼容：精确匹配 或 空 或 完整名以 DB 中截断值为前缀（? LIKE strategy_name || '%'）
+            where += " AND (strategy_name = ? OR strategy_name = '' OR (? LIKE strategy_name || '%' AND strategy_name != ''))"
+            params.extend([strategy_name, strategy_name])
 
-        sql = (
-            "SELECT COUNT(DISTINCT t.stock_code) AS cnt "
-            "FROM trade_records t "
-            "LEFT JOIN trade_records o ON o.order_id=t.order_id AND o.event_type='ORDER' "
-            f"WHERE {where}"
-        )
+        sql = f"""
+        SELECT direction AS dir,
+               COUNT(DISTINCT stock_code) AS cnt
+        FROM trade_records
+        WHERE {where}
+        GROUP BY direction
+        """
         try:
             with _DB_LOCK:
-                row = self._conn.execute(sql, params).fetchone()
-            return int((row["cnt"] if row is not None else 0) or 0)
+                rows = list(self._conn.execute(sql, params).fetchall())
+            result = {"BUY": 0, "SELL": 0}
+            for r in rows:
+                d = str(r["dir"] or "").strip().upper()
+                if d in result:
+                    result[d] = int(r["cnt"] or 0)
+            return result
         except Exception as e:
-            logger.warning("读取 SQLite 当日新建仓数量失败: %s", e)
-            return 0
+            logger.warning("读取 SQLite 当日买卖股票去重数量失败: %s", e)
+            return {"BUY": 0, "SELL": 0}
 
 
 def init_trade_store(db_path: str) -> None:

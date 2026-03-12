@@ -72,10 +72,6 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         # ↓ 当日策略统计相关字段（用于盘后摘要）
         self._start_total_asset: float = 0.0
         self._start_market_value: float = 0.0
-        self._buy_signal_count: int = 0
-        self._sell_signal_count: int = 0
-        self._buy_order_count: int = 0
-        self._sell_order_count: int = 0
 
         self._load_params_from_config()
 
@@ -634,8 +630,6 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             len(bars),
             interval_sec=10,
         )
-        # 统计买入信号次数
-        self._buy_signal_count += 1
         return {
             "action": "buy",
             "stock_code": stock_code,
@@ -874,8 +868,6 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         # 炸板清仓优先
         broken_sig = self._sell_broken_limit(stock_code, bars, yesterday_close, available_volume)
         if broken_sig is not None:
-            # 统计卖出信号次数
-            self._sell_signal_count += 1
             return broken_sig
 
         # MACD 顶 / 顶背离分批止盈
@@ -883,8 +875,6 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         if top_ctx is not None:
             # _sell_batch_on_macd_top 内部已调用 _update_top_cache，直接返回信号
             sig = self._sell_batch_on_macd_top(stock_code, bars, available_volume, top_ctx)
-            if sig is not None:
-                self._sell_signal_count += 1
             return sig
 
         # 未触发任何卖出信号，但若当前分钟存在 MACD 顶点，则仅刷新顶点缓存，供后续分钟做背离对比
@@ -904,8 +894,6 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         order_id = self.place_buy_order(code, volume, price, remark=str(signal.get("desc", "") or ""))
         if order_id is None:
             return
-        # 统计买入委托次数
-        self._buy_order_count += 1
         self._log_throttled(
             f"order_buy:{code}",
             "debug",
@@ -929,8 +917,6 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         order_id = self.place_sell_order(code, volume, price, remark=str(signal.get("desc", "") or ""))
         if order_id is None:
             return
-        # 统计卖出委托次数
-        self._sell_order_count += 1
         self._log_throttled(
             f"order_sell:{code}",
             "debug",
@@ -969,21 +955,22 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             pnl_pct = pnl / self._start_total_asset
             pnl_pct_str = f"{pnl_pct:.2%}"
 
-        # 统计“当日新建仓数量”：使用本地 SQLite 成交记录 TRADE + BUY 去重股票代码
-        new_position_count = 0
+        # 统计“当日买入/卖出股票数量”（按成交方向对股票代码去重）
+        buy_count = 0
+        sell_count = 0
         try:
             store = get_trade_store()
             if store is not None:
-                new_position_count = int(
-                    store.get_daily_new_position_count(
-                        date_yyyymmdd=current_date_str(),
-                        strategy_name=self.name,
-                    )
-                    or 0
+                counts = store.get_daily_distinct_stock_counts_by_direction(
+                    date_yyyymmdd=current_date_str(),
+                    strategy_name=self.name,
                 )
+                buy_count = int(counts.get("BUY", 0) or 0)
+                sell_count = int(counts.get("SELL", 0) or 0)
         except Exception as exc:
-            logger.warning("[%s] 读取当日新建仓数量失败，将按 0 处理: %s", self.name, exc)
-            new_position_count = 0
+            logger.warning("[%s] 读取当日买卖股票数量失败，将按 0 处理: %s", self.name, exc)
+            buy_count = 0
+            sell_count = 0
 
         account_id = ""
         try:
@@ -1004,11 +991,8 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             f"- 当日盈亏：{pnl:.2f}（{pnl_pct_str}）\n"
             "\n"
             "交易统计：\n"
-            f"- 新建仓：{new_position_count} 只\n"
-            f"- 买入信号：{self._buy_signal_count}\n"
-            f"- 卖出信号：{self._sell_signal_count}\n"
-            f"- 买入委托：{self._buy_order_count}\n"
-            f"- 卖出委托：{self._sell_order_count}\n"
+            f"- 买入：{buy_count} 只\n"
+            f"- 卖出：{sell_count} 只\n"
             "\n"
             "股票池概览：\n"
             f"- 预选股票：{len(self.pre_buy_pool)}\n"
