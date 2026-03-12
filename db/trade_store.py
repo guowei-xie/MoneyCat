@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Optional, Any, Dict, List, Tuple
 
 from logging_config import logger
+from xtquant import xtconstant
 
 _DB_LOCK = threading.Lock()
 _STORE: "Optional[SqliteTradeStore]" = None
@@ -171,7 +172,14 @@ class SqliteTradeStore:
         try:
             stock_code = getattr(trade, "stock_code", "") or ""
             order_type = getattr(trade, "order_type", 0)
-            direction = "BUY" if order_type == 23 else "SELL"
+            offset_flag = getattr(trade, "offset_flag", None)
+            # 股票买卖以 offset_flag 为准：OPEN=买入，CLOSE=卖出；order_type 在不同业务场景下可能不等于 STOCK_BUY/SELL。
+            if offset_flag == xtconstant.OFFSET_FLAG_OPEN:
+                direction = "BUY"
+            elif offset_flag == xtconstant.OFFSET_FLAG_CLOSE:
+                direction = "SELL"
+            else:
+                direction = "BUY" if order_type == xtconstant.STOCK_BUY else "SELL"
             volume = getattr(trade, "traded_volume", 0) or 0
             price = getattr(trade, "traded_price", 0) or 0.0
             amount = getattr(trade, "traded_amount", 0) or 0.0
@@ -314,13 +322,19 @@ class SqliteTradeStore:
             return 0
         date_prefix = f"{date_yyyymmdd[0:4]}-{date_yyyymmdd[4:6]}-{date_yyyymmdd[6:8]}"
 
-        where = "event_time LIKE ? AND event_type='TRADE' AND direction='BUY' AND stock_code!=''"
+        # 优先用成交方向判断；若历史版本误写了 TRADE.direction，则用同 order_id 的下单方向兜底纠正。
+        where = "t.event_time LIKE ? AND t.event_type='TRADE' AND t.stock_code!='' AND (t.direction='BUY' OR o.direction='BUY')"
         params: List[Any] = [f"{date_prefix}%"]
         if strategy_name:
-            where += " AND (strategy_name = ? OR strategy_name = '')"
+            where += " AND (t.strategy_name = ? OR t.strategy_name = '')"
             params.append(strategy_name)
 
-        sql = f"SELECT COUNT(DISTINCT stock_code) AS cnt FROM trade_records WHERE {where}"
+        sql = (
+            "SELECT COUNT(DISTINCT t.stock_code) AS cnt "
+            "FROM trade_records t "
+            "LEFT JOIN trade_records o ON o.order_id=t.order_id AND o.event_type='ORDER' "
+            f"WHERE {where}"
+        )
         try:
             with _DB_LOCK:
                 row = self._conn.execute(sql, params).fetchone()

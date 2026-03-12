@@ -56,7 +56,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         self.limit_count_check_days = 250
         self.min_limit_count = 1
         self.buy_cash_ratio = 0.1  # 每次买入最多使用可用资金比例
-        self.buy_end_hms = "14:30:00"  # 买入信号截止时间（含），格式 HH:MM:SS
+        self.buy_end_hms = "11:00:00"  # 买入信号截止时间（含），格式 HH:MM:SS
 
         # ↓ 运行时缓存
         self.trade_calendar: List[str] = []
@@ -1019,6 +1019,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
 
         logger.info("[%s] 当日策略执行摘要：\n%s", self.name, msg.replace("\n", " | "))
         try:
+            time.sleep(10)
             feishu_send_text(msg)
         except Exception as exc:
             logger.warning("[%s] 盘后策略摘要飞书推送失败: %s", self.name, exc)

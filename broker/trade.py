@@ -27,7 +27,14 @@ def _trade_callback_notify(trade) -> None:
     try:
         code = getattr(trade, "stock_code", "") or ""
         order_type = getattr(trade, "order_type", 0)
-        direction = "买入" if order_type == xtconstant.STOCK_BUY else "卖出"
+        offset_flag = getattr(trade, "offset_flag", None)
+        # 股票买卖以 offset_flag 为准（OPEN=买入，CLOSE=卖出）；兜底再看 order_type。
+        if offset_flag == xtconstant.OFFSET_FLAG_OPEN:
+            direction = "买入"
+        elif offset_flag == xtconstant.OFFSET_FLAG_CLOSE:
+            direction = "卖出"
+        else:
+            direction = "买入" if order_type == xtconstant.STOCK_BUY else "卖出"
         vol = getattr(trade, "traded_volume", 0) or 0
         price = getattr(trade, "traded_price", 0) or 0
         amount = getattr(trade, "traded_amount", 0) or 0
