@@ -39,6 +39,7 @@ python main.py
 ```text
 MoneyCat/
 ├── main.py                  # 主入口
+├── inspect_trade_db.py      # 交易记录库浏览脚本
 ├── config.ini.example       # 配置示例
 ├── logging_config.py        # 日志配置
 ├── broker/                  # 行情 / 交易 / 账户封装
@@ -51,16 +52,17 @@ MoneyCat/
 ## 内置策略（入口配置）
 
 - **SimplePolling**：示例轮询策略，主要用于跑通订阅与框架流程
-- **BreakPrevHighLimitUp**：示例实盘策略（突破前高涨停思路）
+- **BreakPrevHighLimitUp**：突破前高涨停打板实盘策略
 
 ## 本地交易记录（SQLite）
 
 - 默认生成 `trade_records.db`（可用 `[DB].TRADE_DB_PATH` 修改）。
 - 实盘相关事件会写入表 `trade_records`（下单/成交/撤单及失败等），用于复盘与排障。
 
-你可以使用任意 SQLite 客户端或命令行快速查询，例如：
+可使用 `inspect_trade_db.py` 快速浏览，或任意 SQLite 客户端查询，例如：
 
 ```bash
+python inspect_trade_db.py --date 20260312
 sqlite3 trade_records.db "SELECT event_time,event_type,stock_code,direction,volume,price FROM trade_records ORDER BY id DESC LIMIT 20;"
 ```
 

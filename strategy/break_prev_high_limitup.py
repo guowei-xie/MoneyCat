@@ -5,7 +5,7 @@
 核心思想：
 1. 盘前：在给定股票池中，根据近 N 日日线数据筛选“接近前高”的标的，并缓存昨日收盘价与前高价；
 2. 盘中：每秒轮询 tick，同时依赖 1 分钟分时 K 线信号：
-   - 买入：涨幅接近涨停 + 当日最低或昨收低于前高 + 当前价突破前高；
+   - 买入：涨幅接近涨停 + 当日最低或昨收低于前高 + 当前价突破前高 + 分时 MACD 上行（当前 > 上一分钟）；
    - 卖出：当前涨停不卖；炸板则清仓；否则按分时 MACD 顶/顶背离分批止盈。
 """
 
@@ -472,7 +472,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
 
     def buy_signal(self, stock_code: str, bars: Optional[pd.DataFrame]) -> Optional[Dict[str, Any]]:
         """
-        买入信号：接近涨停 + 低于前高回踩 + 当前价突破前高。
+        买入信号：接近涨停 + 低于前高回踩 + 当前价突破前高 + 分时 MACD 上行（当前 > 上一分钟）。
         调用方（on_tick）保证仅在 09:30~11:00 时段内调用本方法。
         """
         if stock_code in self._buy_skip_cache:
@@ -532,23 +532,6 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             )
             return None
 
-        # 当前分时之前不允许已触发过接近涨停
-        if len(bars) > 1:
-            high_before = float(bars.iloc[:-1]["high"].max())
-            if high_before >= limit_threshold:
-                self._buy_skip_cache[stock_code] = "hit_before"
-                self._log_throttled(
-                    f"buy_reject_hit_before:{stock_code}",
-                    "debug",
-                    "[%s] 买入跳过(此前已接近涨停): %s high_before=%.2f threshold=%.2f",
-                    self.name,
-                    stock_code,
-                    high_before,
-                    limit_threshold,
-                    interval_sec=30,
-                )
-                return None
-
         # 1) 当前价是否接近涨停
         if current_price / pre_close < (1 + self.limit_near_pct):
             return None
@@ -570,6 +553,28 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         # 3) 当前价必须突破前高
         if current_price <= prev_high:
             return None
+
+        # 4) 分时 MACD 过滤：当前分钟 MACD 必须大于上一分钟 MACD（动量向上）
+        if len(bars) >= 2:
+            # 使用已收盘的分钟 K，忽略当前正在形成的最后一根
+            closed_bars = bars.iloc[:-1] if len(bars) > 1 else bars
+            if len(closed_bars) >= 2:
+                macd_df = get_macd(closed_bars)
+                if len(macd_df) >= 2 and "macd" in macd_df.columns:
+                    current_macd = float(macd_df.iloc[-1]["macd"])
+                    prev_macd = float(macd_df.iloc[-2]["macd"])
+                    if current_macd <= prev_macd:
+                        self._log_throttled(
+                            f"buy_reject_macd_down:{stock_code}",
+                            "debug",
+                            "[%s] 买入跳过(MACD未上行): %s current_macd=%.6f prev_macd=%.6f",
+                            self.name,
+                            stock_code,
+                            current_macd,
+                            prev_macd,
+                            interval_sec=30,
+                        )
+                        return None
 
         volume = self.calc_buy_volume_by_ratio(
             price=float(current_price),
