@@ -22,7 +22,6 @@ from utils.position_sizing import convert_to_safe_sell_volume
 from utils.indicators import get_macd, is_macd_top
 from utils.feishu_notify import send_text as feishu_send_text
 from utils.optional import get_tqdm
-from utils.time_utils import get_last_bar_hms
 from db.trade_store import get_trade_store
 
 tqdm = get_tqdm()
@@ -380,6 +379,8 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         buy_end_hms = self.buy_end_hms if isinstance(self.buy_end_hms, str) and len(self.buy_end_hms) == 8 else "11:00:00"
         # 买入时段：仅 09:30~buy_end_hms 内才收集买候选、拉分时、做买入信号判断
         in_buy_window = "09:30:00" <= now_hms <= buy_end_hms
+        # 卖出时段：仅 09:30~14:55 内才监控持仓并进行卖出信号判定
+        in_sell_window = "09:30:00" <= now_hms <= "14:55:00"
 
         # 盘中买入只关注“预买入池”中且当前 tick 涨幅已接近涨停的标的，减少分时 K 请求量；
         # 盘中卖出则默认对预卖出池全部监控。
@@ -416,8 +417,20 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
                         interval_sec=15,
                     )
 
-        # 卖出池默认全部监控
-        sell_candidates = list(self.pre_sell_pool)
+        # 卖出池：仅在卖出窗口内才监控（窗口外不做卖出信号判定，也不拉取卖出相关 1mK）
+        sell_candidates: List[str] = []
+        if in_sell_window:
+            sell_candidates = list(self.pre_sell_pool)
+        elif self.pre_sell_pool:
+            self._log_throttled(
+                "sell_window_skip_all",
+                "debug",
+                "[%s] 当前不在卖出时间窗，跳过卖出信号判定: now=%s pre_sell_pool=%s",
+                self.name,
+                now_hms,
+                len(self.pre_sell_pool),
+                interval_sec=60,
+            )
 
         kline_codes = sorted(set(buy_candidates) | set(sell_candidates))
         if not kline_codes:
@@ -829,24 +842,10 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         1) 当前涨停则不卖；
         2) 若炸板，则立即清仓；
         3) 否则按分时 MACD 首个顶 / 顶背离分批卖出。
+
+        调用方（on_tick）保证仅在 09:30~14:55 时段内调用本方法。
         """
         if bars is None or bars.empty or stock_code not in self.cached:
-            return None
-
-        # 卖出信号时间窗控制：仅在 09:30~14:55 内产生新的卖出信号
-        last_hms = get_last_bar_hms(bars)
-        if last_hms is not None and (
-            last_hms < "09:30:00" or last_hms > "14:55:00"
-        ):
-            self._log_throttled(
-                f"sell_reject_timewin:{stock_code}",
-                "debug",
-                "[%s] 卖出跳过(超出时间窗): %s time=%s",
-                self.name,
-                stock_code,
-                last_hms,
-                interval_sec=60,
-            )
             return None
 
         available_volume = int(self.account.get_available_volume(stock_code))
