@@ -770,7 +770,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         self._log_throttled(
             f"sell_broken:{stock_code}",
             "debug",
-            "[%s] 触发炸板清仓: %s current=%.2f limit_up=%.2f gap(min)=%s high_max=%.2f",
+            "[%s] 炸板清仓: %s current=%.2f limit_up=%.2f gap(min)=%s high_max=%.2f",
             self.name,
             stock_code,
             current_price,
@@ -786,7 +786,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             "volume": int(available_volume),
             "minute_k_count": len(bars),
             "time": bars.index[-1],
-            "desc": "止盈（炸板清仓）",
+            "desc": "炸板清仓",
         }
 
     def _sell_batch_on_macd_top(
@@ -815,7 +815,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         self._log_throttled(
             f"sell_macd_top:{stock_code}",
             "debug",
-            "[%s] 分批止盈(MACD顶/背离): %s price=%.2f macd=%.6f 卖量=%s 可卖=%s batch_remain=%s last_top=(%.2f,%.6f)",
+            "[%s] 波峰分批: %s price=%.2f macd=%.6f 卖量=%s 可卖=%s batch_remain=%s last_top=(%.2f,%.6f)",
             self.name,
             stock_code,
             current_price,
@@ -834,7 +834,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             "volume": int(sell_volume),
             "minute_k_count": len(bars),
             "time": bars.index[-1],
-            "desc": "止盈（MACD 顶 / 顶背离）",
+            "desc": "波峰分批",
         }
 
     def sell_signal(self, stock_code: str, bars: Optional[pd.DataFrame]) -> Optional[Dict[str, Any]]:
