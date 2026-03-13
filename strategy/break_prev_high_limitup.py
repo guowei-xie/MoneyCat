@@ -584,39 +584,17 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             lot_size=100,
         )
         if volume <= 0:
-            # 首次可买量为 0，尝试撤掉最早未成交买单以释放资金（基类通用能力）
-            released = self.cancel_earliest_unfilled_buy_order()
-            if not released:
-                self.log_insufficient_cash(stock_code, current_price)
-                self._log_throttled(
-                    f"buy_reject_volume0:{stock_code}",
-                    "debug",
-                    "[%s] 买入跳过(可买量为0): %s price=%.2f total_asset/cash不足或比例过低",
-                    self.name,
-                    stock_code,
-                    current_price,
-                    interval_sec=60,
-                )
-                return None
-
-            # 撤单成功后重新计算一次可买量（若资金尚未完全释放，可能仍为 0）
-            volume = self.calc_buy_volume_by_ratio(
-                price=float(current_price),
-                cash_ratio=float(self.buy_cash_ratio),
-                lot_size=100,
+            self.log_insufficient_cash(stock_code, current_price)
+            self._log_throttled(
+                f"buy_reject_volume0:{stock_code}",
+                "debug",
+                "[%s] 买入跳过(可买量为0): %s price=%.2f total_asset/cash不足或比例过低",
+                self.name,
+                stock_code,
+                current_price,
+                interval_sec=60,
             )
-            if volume <= 0:
-                self.log_insufficient_cash(stock_code, current_price)
-                self._log_throttled(
-                    f"buy_reject_volume0_after_cancel:{stock_code}",
-                    "debug",
-                    "[%s] 买入跳过(撤单后仍可买量为0): %s price=%.2f total_asset/cash不足或比例过低",
-                    self.name,
-                    stock_code,
-                    current_price,
-                    interval_sec=60,
-                )
-                return None
+            return None
 
         limit_up_price = get_limit_price(stock_code, pre_close, "up")
         order_price = float(limit_up_price) if limit_up_price is not None else current_price
