@@ -195,6 +195,25 @@ class BaseStrategy(ABC):
         except Exception:
             return False
 
+    def get_stock_position_codes(self, positions: List[Dict[str, Any]], tag: str = "positions") -> List[str]:
+        """
+        从持仓列表中提取有效股票代码（volume > 0，且为股票标的，排除 ETF/基金等）。
+
+        :param positions: 券商返回的持仓列表
+        :param tag: 日志标签，便于区分调用场景
+        :return: 过滤后的股票代码列表
+        """
+        from logging_config import logger
+
+        codes = [p.get("stock_code") for p in positions if p.get("stock_code") and int(p.get("volume", 0) or 0) > 0]
+        if not codes:
+            return []
+        try:
+            return self.data.filter_tradeable_stock_codes(codes, tag=tag)
+        except Exception as exc:
+            logger.warning("[%s] 过滤股票持仓失败，回退为全部持仓: %s", self.name, exc)
+            return codes
+
     def log_insufficient_cash(self, stock_code: str, price: float) -> None:
         """
         资金不足时按单票节流输出提示日志，避免在高频 tick 下刷屏。

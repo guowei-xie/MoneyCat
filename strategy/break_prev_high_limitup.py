@@ -152,11 +152,9 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         self.pre_buy_pool = self._select_stocks_by_daily(daily_bars_universe)
         logger.info(f"{self.name} 盘前预选股完成，预选股池=%s", len(self.pre_buy_pool))
 
-        # 2) 获取当前持仓，构建预卖出池
-        holding_codes = {p.get("stock_code") for p in self.account.get_positions()} if self.account._connected() else set()
-        raw_pre_sell = sorted(code for code in holding_codes if code)
-        # 仅对“预卖出池（持仓）”做可交易过滤，规避停牌/非股票标的等特殊情况
-        self.pre_sell_pool = self.data.filter_tradeable_stock_codes(raw_pre_sell, tag="pre_sell_pool")
+        # 2) 获取当前持仓，构建预卖出池（排除已清仓、非股票标的）
+        raw_positions = self.account.get_positions() or [] if self.account._connected() else []
+        self.pre_sell_pool = self.get_stock_position_codes(raw_positions, tag="pre_sell_pool")
         # 已持仓标的：当日不再做买入信号判断，直接加入跳过缓存
         for code in self.pre_sell_pool:
             self._buy_skip_cache[code] = "has_position"
@@ -983,8 +981,8 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         except Exception:
             account_id = ""
 
-        # 组装精简版策略执行摘要
-        hold_count = len(positions)
+        # 组装精简版策略执行摘要（当前持仓仅计股票标的，与预卖池口径一致）
+        hold_count = len(self.get_stock_position_codes(positions, tag="hold_count"))
         msg = (
             f"【策略日结】{self.name}\n"
             f"日期：{current_date_str()}\n"
