@@ -45,26 +45,56 @@ class BaseStrategy(ABC):
         """盘前准备：预选股池、持仓股池、缓存等。"""
         pass
 
+    def _get_config_float(self, section: str, key: str, default: float, min_val: Optional[float] = None) -> float:
+        """
+        从配置读取浮点值，兼容 ConfigParser 与 dict。
+
+        :param section: 配置节
+        :param key: 配置键
+        :param default: 默认值
+        :param min_val: 最小值下限（可选）
+        """
+        try:
+            if self.config is None:
+                return default
+            if hasattr(self.config, "get"):
+                try:
+                    raw = self.config.get(section, key, fallback=str(default))
+                except TypeError:
+                    raw = str(default)
+            else:
+                raw = str(default)
+            val = float(str(raw or str(default)).strip())
+            return max(val, min_val) if min_val is not None else val
+        except Exception:
+            return default
+
+    def _get_tick_interval_sec(self) -> float:
+        """从配置读取信号监听轮询间隔（秒），默认 1，最小 0.1。"""
+        return self._get_config_float("STRATEGY", "TICK_INTERVAL_SEC", 1.0, 0.1)
+
     def on_trading_loop(self) -> None:
         """
         盘中交易循环：轮询行情、产生信号、执行交易。
-        默认实现为每秒轮询并调用 on_tick；子类可重写整段逻辑。
+        默认实现按配置间隔轮询并调用 on_tick；子类可重写整段逻辑。
         """
         import time
         from utils.common import is_trading_time, is_market_closed
         from logging_config import logger
+
+        interval = self._get_tick_interval_sec()
+        logger.info("[%s] 信号监听间隔=%.1f 秒", self.name, interval)
 
         while True:
             if is_market_closed():
                 logger.info("[%s] 已收盘，退出盘中循环", self.name)
                 break
             if not is_trading_time():
-                time.sleep(1)
+                time.sleep(interval)
                 continue
-            # 每秒轮询一次
             tick_data = self._fetch_tick_data()
             self.on_tick(tick_data)
-            time.sleep(1)
+            time.sleep(interval)
 
     def ensure_data_connected(self) -> bool:
         """
@@ -148,27 +178,8 @@ class BaseStrategy(ABC):
         return max(float(total), 0.0)
 
     def get_position_value_limit(self) -> float:
-        """
-        从配置读取“持仓金额上限”（0 表示不启用）。
-
-        配置位置：config.ini -> [RISK] POSITION_VALUE_LIMIT
-        """
-        try:
-            if self.config is None:
-                return 0.0
-            # ConfigParser / dict 两种形态都兼容
-            if hasattr(self.config, "get"):
-                try:
-                    raw = self.config.get("RISK", "POSITION_VALUE_LIMIT", fallback="0")
-                except TypeError:
-                    # dict.get(key, default) 的签名不同
-                    raw = "0"
-            else:
-                raw = "0"
-            val = float(str(raw or "0").strip())
-            return max(val, 0.0)
-        except Exception:
-            return 0.0
+        """从配置读取持仓金额上限（0 表示不启用）。"""
+        return self._get_config_float("RISK", "POSITION_VALUE_LIMIT", 0.0, 0.0)
 
     def should_block_buy_by_position_limit(self) -> bool:
         """
@@ -453,7 +464,8 @@ class BaseStrategy(ABC):
 
     def on_tick(self, tick_data: Dict[str, Any]) -> None:
         """
-        每秒回调：根据 tick 判断信号并下单等。
+        轮询回调：根据 tick 判断信号并下单等。
+        调用频率由 config.ini [STRATEGY] TICK_INTERVAL_SEC 控制。
         子类实现具体逻辑；默认空实现。
         """
         pass

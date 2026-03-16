@@ -4,7 +4,7 @@
 
 核心思想：
 1. 盘前：在给定股票池中，根据近 N 日日线数据筛选“接近前高”的标的，并缓存昨日收盘价与前高价；
-2. 盘中：每秒轮询 tick，同时依赖 1 分钟分时 K 线信号：
+2. 盘中：按配置间隔轮询 tick，同时依赖 1 分钟分时 K 线信号：
    - 买入：涨幅接近涨停 + 委卖量为空（已涨停）+ 当日最低或昨收低于前高 + 当前价突破前高 + 分时 MACD 上行（当前 > 上一分钟）；
    - 卖出：当前涨停不卖；炸板则清仓；否则按分时 MACD 顶/顶背离分批止盈。
 """
@@ -355,7 +355,8 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
 
     def on_tick(self, tick_data: Dict[str, Any]) -> None:
         """
-        每秒回调：基于 tick 与 1 分钟分时数据判断买卖信号并执行下单。
+        轮询回调：基于 tick 与 1 分钟分时数据判断买卖信号并执行下单。
+        调用频率由 config.ini [STRATEGY] TICK_INTERVAL_SEC 控制。
         """
         if not tick_data:
             return
