@@ -27,6 +27,9 @@ class BaseStrategy(ABC):
         self._throttle_log_ts: Dict[str, float] = {}
         # 资金不足日志节流：记录每只股票上次输出时间戳
         self._last_insufficient_cash_log: Dict[str, float] = {}
+        # 两次 tick 轮询间隔监控：上次轮询开始时间戳、本次与上次的间隔（秒）
+        self._last_tick_ts: float = 0.0
+        self._last_tick_interval_sec: Optional[float] = None
 
     def run(self) -> None:
         """完整流程：初始化 → 盘前 → 盘中 → 盘后。"""
@@ -92,6 +95,14 @@ class BaseStrategy(ABC):
             if not is_trading_time():
                 time.sleep(interval)
                 continue
+            # 监控两次 tick 轮询的间隔时长
+            now_ts = time.time()
+            if self._last_tick_ts > 0:
+                self._last_tick_interval_sec = round(now_ts - self._last_tick_ts, 3)
+            else:
+                self._last_tick_interval_sec = None
+            self._last_tick_ts = now_ts
+
             tick_data = self._fetch_tick_data()
             self.on_tick(tick_data)
             time.sleep(interval)

@@ -455,11 +455,14 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         if not kline_codes:
             return
 
+        # 轮询间隔：首次为 None，后续为与上次轮询的间隔秒数
+        interval_str = "%.2fs" % self._last_tick_interval_sec if self._last_tick_interval_sec is not None else "-"
         self._log_throttled(
             "tick_summary",
             "debug",
-            "[%s] 盘中轮询: tick=%s 预买池=%s 预卖池=%s 买候选=%s 卖监控=%s 拉取1mK=%s",
+            "[%s] 盘中轮询: 轮询间隔=%s tick=%s 预买池=%s 预卖池=%s 买候选=%s 卖监控=%s 拉取1mK=%s",
             self.name,
+            interval_str,
             tick_count,
             len(self.pre_buy_pool),
             len(self.pre_sell_pool),
