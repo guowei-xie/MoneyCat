@@ -245,7 +245,8 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         1) 当前交易日收盘价位于 [前高*(1-margin_pct), 前高] 区间内，前高为近 lookback_days 日实体最高价（不含 T 日）；
         2) 近 interval_days+1 个交易日区间振幅 <= interval_max_amplitude_pct；
         3) 近 interval_days 个交易日内没有涨停；
-        4) 近 limit_count_check_days 日涨停次数不少于 min_limit_count。
+        4) 近 limit_count_check_days 日涨停次数不少于 min_limit_count；
+        5) 当日日线 MACD 为负时，当日 MACD 不能低于昨日 MACD；当日 MACD 为正当日则不判断。
         """
         result: List[str] = []
         min_bars = max(2, self.interval_days + 1)
@@ -308,6 +309,25 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
                     limit_up_count += 1
             if limit_up_count < self.min_limit_count:
                 continue
+
+            # 日线 MACD 筛选：当日 MACD 为负时，需满足当日 MACD >= 昨日 MACD；当日 MACD 为正当日则不判断
+            if len(df_sorted) >= 30:  # MACD 需足够历史数据（slow_period=26）
+                macd_df = get_macd(df_sorted)
+                if len(macd_df) >= 2 and "macd" in macd_df.columns:
+                    macd_today = macd_df.iloc[-1]["macd"]
+                    macd_yesterday = macd_df.iloc[-2]["macd"]
+                    if pd.notna(macd_today) and pd.notna(macd_yesterday):
+                        macd_today_f = float(macd_today)
+                        macd_yesterday_f = float(macd_yesterday)
+                        if macd_today_f < 0 and macd_today_f < macd_yesterday_f:
+                            logger.debug(
+                                "[%s] 预选股过滤(MACD负值且下行): %s macd_today=%.6f macd_yesterday=%.6f",
+                                self.name,
+                                code,
+                                macd_today_f,
+                                macd_yesterday_f,
+                            )
+                            continue
 
             result.append(code)
 
