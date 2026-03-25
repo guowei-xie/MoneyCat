@@ -5,7 +5,7 @@
 核心思想：
 1. 盘前：在给定股票池中，根据近 N 日日线数据筛选“接近前高”的标的，并缓存昨日收盘价与前高价；
 2. 盘中：按配置间隔轮询 tick，同时依赖 1 分钟分时 K 线信号：
-   - 买入：涨幅接近涨停 + 委卖量为空（已涨停）+ 当日最低或昨收低于前高 + 当前价突破前高 + 分时 MACD 上行（当前 > 上一分钟）；
+   - 买入：涨幅达到阈值（默认相对昨收 ≥9.8%）+ 当日最低或昨收低于前高 + 当前价突破前高 + 分时 MACD 上行（当前 > 上一分钟）；
    - 卖出：当前涨停不卖；炸板则清仓；否则按分时 MACD 顶/顶背离分批止盈。
 """
 
@@ -17,7 +17,7 @@ import pandas as pd
 from logging_config import logger
 from strategy.base import BaseStrategy
 from utils.common import get_trading_dates, current_date_str
-from utils.market_rules import is_ask_vol_empty, is_limit, get_limit_price
+from utils.market_rules import is_limit, get_limit_price
 from utils.position_sizing import convert_to_safe_sell_volume
 from utils.indicators import get_macd, is_macd_top
 from utils.feishu_notify import send_text as feishu_send_text
@@ -46,7 +46,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         # ↓ 选股与买卖参数（默认值与回测工程保持一致，可通过配置覆盖）
         self.lookback_days = 90
         self.margin_pct = 0.10
-        self.limit_near_pct = 0.095
+        self.limit_near_pct = 0.098  # 买入涨幅阈值（相对昨收），可通过 LIMIT_NEAR_PCT 覆盖
         self.batch_sell_count = 2
         self.sell_macd_min_bars = 5
         self.sell_broken_limit_gap_minutes = 3
@@ -397,7 +397,7 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
         # 卖出时段：仅 09:30~14:55 内才监控持仓并进行卖出信号判定
         in_sell_window = "09:30:00" <= now_hms <= "14:55:00"
 
-        # 盘中买入只关注“预买入池”中且当前 tick 涨幅已接近涨停的标的，减少分时 K 请求量；
+        # 盘中买入只关注“预买入池”中且当前 tick 涨幅已达阈值的标的，减少分时 K 请求量；
         # 盘中卖出则默认对预卖出池全部监控。
         tick_count = len(tick_data)
         pre_buy_set = set(self.pre_buy_pool)
@@ -416,12 +416,8 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
                 prev_high = float(cached.get("prev_high_price", 0) or 0)
                 if last_price <= 0 or pre_close <= 0 or prev_high <= 0:
                     continue
-                # 仅当 tick 涨幅已接近涨停、当前价已大于前高、且委卖量为空（已涨停）时，才拉取分时 K 做进一步信号判断
-                if (
-                    last_price / pre_close >= (1 + self.limit_near_pct)
-                    and last_price > prev_high
-                    and is_ask_vol_empty(tick)
-                ):
+                # 仅当 tick 涨幅已达阈值且当前价已大于前高时，才拉取分时 K 做进一步信号判断
+                if last_price / pre_close >= (1 + self.limit_near_pct) and last_price > prev_high:
                     buy_candidates.append(code)
                     self._log_throttled(
                         f"buy_candidate:{code}",
@@ -498,8 +494,8 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
 
     def buy_signal(self, stock_code: str, bars: Optional[pd.DataFrame]) -> Optional[Dict[str, Any]]:
         """
-        买入信号：接近涨停 + 低于前高回踩 + 当前价突破前高 + 分时 MACD 上行（当前 > 上一分钟）。
-        调用方（on_tick）保证仅在 09:30~11:00 时段内调用，且标的已满足委卖量为空（已涨停）。
+        买入信号：涨幅达阈值 + 低于前高回踩 + 当前价突破前高 + 分时 MACD 上行（当前 > 上一分钟）。
+        调用方（on_tick）保证仅在 09:30~buy_end_hms 时段内调用。
         """
         if stock_code in self._buy_skip_cache:
             return None
