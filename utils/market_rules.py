@@ -3,28 +3,10 @@
 市场规则工具：涨跌停幅度、涨跌停判定、涨跌停价计算、tick 状态解析等。
 """
 
-from typing import Any, Dict, Optional
+from typing import Optional
 
 from utils.common import add_stock_suffix
 from xtquant import xtdata
-
-
-def is_ask_vol_empty(tick: Optional[Dict[str, Any]]) -> bool:
-    """
-    委卖量为空（即已涨停）：askVol 为空或全为 0 时返回 True。
-    参考：https://dict.thinktrader.net/dictionary/indexes.html?id=5M2071
-
-    :param tick: get_full_tick 返回的单只标的 tick 字典
-    :return: 委卖量为空时 True，否则 False
-    """
-    if not tick or not isinstance(tick, dict):
-        return False
-    ask_vol = tick.get("askVol")
-    if ask_vol is None:
-        return False
-    if isinstance(ask_vol, (list, tuple)):
-        return sum(int(x) for x in ask_vol if isinstance(x, (int, float))) == 0
-    return False
 
 
 def get_limit_percentage(stock_code: str) -> float:

@@ -391,9 +391,8 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             self.cancel_all_unfilled_orders(notify=True)
             self._has_canceled_unfilled_orders_before_close = True
 
-        buy_end_hms = self.buy_end_hms if isinstance(self.buy_end_hms, str) and len(self.buy_end_hms) == 8 else "11:00:00"
         # 买入时段：仅 09:30~buy_end_hms 内才收集买候选、拉分时、做买入信号判断
-        in_buy_window = "09:30:00" <= now_hms <= buy_end_hms
+        in_buy_window = "09:30:00" <= now_hms <= self.buy_end_hms
         # 卖出时段：仅 09:30~14:55 内才监控持仓并进行卖出信号判定
         in_sell_window = "09:30:00" <= now_hms <= "14:55:00"
 
@@ -417,7 +416,8 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
                 if last_price <= 0 or pre_close <= 0 or prev_high <= 0:
                     continue
                 # 仅当 tick 涨幅已达阈值且当前价已大于前高时，才拉取分时 K 做进一步信号判断
-                if last_price / pre_close >= (1 + self.limit_near_pct) and last_price > prev_high:
+                limit_threshold = pre_close * (1 + self.limit_near_pct)
+                if last_price >= limit_threshold and last_price > prev_high:
                     buy_candidates.append(code)
                     self._log_throttled(
                         f"buy_candidate:{code}",
@@ -577,26 +577,25 @@ class BreakPrevHighLimitUpStrategy(BaseStrategy):
             return None
 
         # 4) 分时 MACD 过滤：当前分钟 MACD 必须大于上一分钟 MACD（动量向上）
-        if len(bars) >= 2:
-            # 使用已收盘的分钟 K，忽略当前正在形成的最后一根
-            closed_bars = bars.iloc[:-1] if len(bars) > 1 else bars
-            if len(closed_bars) >= 2:
-                macd_df = get_macd(closed_bars)
-                if len(macd_df) >= 2 and "macd" in macd_df.columns:
-                    current_macd = float(macd_df.iloc[-1]["macd"])
-                    prev_macd = float(macd_df.iloc[-2]["macd"])
-                    if current_macd <= prev_macd:
-                        self._log_throttled(
-                            f"buy_reject_macd_down:{stock_code}",
-                            "debug",
-                            "[%s] 买入跳过(MACD未上行): %s current_macd=%.6f prev_macd=%.6f",
-                            self.name,
-                            stock_code,
-                            current_macd,
-                            prev_macd,
-                            interval_sec=30,
-                        )
-                        return None
+        # 使用已收盘的分钟 K，忽略当前正在形成的最后一根
+        closed_bars = bars.iloc[:-1]
+        if len(closed_bars) >= 2:
+            macd_df = get_macd(closed_bars)
+            if len(macd_df) >= 2 and "macd" in macd_df.columns:
+                current_macd = float(macd_df.iloc[-1]["macd"])
+                prev_macd = float(macd_df.iloc[-2]["macd"])
+                if current_macd <= prev_macd:
+                    self._log_throttled(
+                        f"buy_reject_macd_down:{stock_code}",
+                        "debug",
+                        "[%s] 买入跳过(MACD未上行): %s current_macd=%.6f prev_macd=%.6f",
+                        self.name,
+                        stock_code,
+                        current_macd,
+                        prev_macd,
+                        interval_sec=30,
+                    )
+                    return None
 
         volume = self.calc_buy_volume_by_ratio(
             price=float(current_price),
