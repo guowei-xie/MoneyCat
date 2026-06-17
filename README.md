@@ -53,6 +53,21 @@ MoneyCat/
 
 - **SimplePolling**：示例轮询策略，主要用于跑通订阅与框架流程
 - **BreakPrevHighLimitUp**：突破前高涨停打板实盘策略
+  - 买入：当日涨幅接近涨停（默认 ≥9.8%，可通过 `LIMIT_NEAR_PCT` 调整）+ 当日最低或昨收低于前高 + 当前价突破前高 + 分时 MACD 上行；
+  - 卖出：当前涨停不卖；炸板清仓；其余按分时 MACD 顶/顶背离分批止盈；
+  - 预选股：近 N 个交易日区间振幅受限、无涨停、历史涨停次数达标，且当日日线 MACD 为负时不能下行（≥昨日 MACD）。
+
+## 常用策略参数（`[STRATEGY]` 节）
+
+| 配置项 | 说明 | 默认 |
+|---|---|---|
+| `NAME` | 策略名 | `BreakPrevHighLimitUp` |
+| `TICK_INTERVAL_SEC` | 盘中信号轮询间隔（秒，可配，最小 0.1） | `1.0` |
+| `LIMIT_NEAR_PCT` | 触发买入的涨幅阈值（相对昨收） | `0.098` |
+| `BUY_CASH_RATIO` | 单仓最大资金占总资产比例 | `0.1` |
+| `BUY_END_HMS` | 买入信号截止时间（`HH:MM:SS`） | `11:00:00` |
+| `INTERVAL_DAYS` / `INTERVAL_MAX_AMPLITUDE_PCT` | 预选股区间天数与最大振幅 | `10` / `0.20` |
+| `LIMIT_COUNT_CHECK_DAYS` / `MIN_LIMIT_COUNT` | 历史涨停统计窗口与最低次数 | `250` / `1` |
 
 ## 本地交易记录（SQLite）
 
